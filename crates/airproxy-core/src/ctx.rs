@@ -41,6 +41,7 @@ pub enum ResponseSlot {
     Stream(BoxStream<'static, Result<StreamItem, ProviderError>>),
 }
 
+#[derive(Debug)]
 pub enum Identity {
     Anonymous { raw_bearer: Option<String> },
     Holder { name: String },
