@@ -1,0 +1,39 @@
+[package]
+name = "ai-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "ai_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ai-engine"
+path = "src/main.rs"
+
+[dependencies]
+ai-engine-anthropic.workspace = true
+ai-engine-config.workspace = true
+ai-engine-core.workspace = true
+ai-engine-http.workspace = true
+ai-engine-openai.workspace = true
+ai-engine-provider.workspace = true
+ai-engine-stages.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+clap.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+async-openai = "0.27"
+futures.workspace = true
+reqwest = { workspace = true }
+serde_json.workspace = true
+tokio = { workspace = true }
+wiremock.workspace = true

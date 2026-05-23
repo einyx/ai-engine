@@ -12,16 +12,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy"
+name = "ai-engine"
 version = "0.1.0"
 dependencies = [
- "airproxy-anthropic",
- "airproxy-config",
- "airproxy-core",
- "airproxy-http",
- "airproxy-openai",
- "airproxy-provider",
- "airproxy-stages",
+ "ai-engine-anthropic",
+ "ai-engine-config",
+ "ai-engine-core",
+ "ai-engine-http",
+ "ai-engine-openai",
+ "ai-engine-provider",
+ "ai-engine-stages",
  "anyhow",
  "arc-swap",
  "async-openai",
@@ -38,10 +38,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy-anthropic"
+name = "ai-engine-anthropic"
 version = "0.1.0"
 dependencies = [
- "airproxy-provider",
+ "ai-engine-provider",
  "async-stream",
  "async-trait",
  "bytes",
@@ -54,7 +54,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy-config"
+name = "ai-engine-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -64,10 +64,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy-core"
+name = "ai-engine-core"
 version = "0.1.0"
 dependencies = [
- "airproxy-provider",
+ "ai-engine-provider",
  "anyhow",
  "async-trait",
  "bytes",
@@ -80,12 +80,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy-http"
+name = "ai-engine-http"
 version = "0.1.0"
 dependencies = [
- "airproxy-core",
- "airproxy-provider",
- "airproxy-stages",
+ "ai-engine-core",
+ "ai-engine-provider",
+ "ai-engine-stages",
  "anyhow",
  "arc-swap",
  "async-trait",
@@ -102,10 +102,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy-openai"
+name = "ai-engine-openai"
 version = "0.1.0"
 dependencies = [
- "airproxy-provider",
+ "ai-engine-provider",
  "async-stream",
  "async-trait",
  "bytes",
@@ -118,7 +118,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy-provider"
+name = "ai-engine-provider"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -132,11 +132,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "airproxy-stages"
+name = "ai-engine-stages"
 version = "0.1.0"
 dependencies = [
- "airproxy-core",
- "airproxy-provider",
+ "ai-engine-core",
+ "ai-engine-provider",
  "anyhow",
  "async-trait",
  "bytes",

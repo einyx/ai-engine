@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.78"
 license = "Apache-2.0"
-repository = "https://github.com/alessiog/airproxy"
+repository = "https://github.com/alessiog/ai-engine"
 
 [workspace.dependencies]
 async-stream = "0.3"
@@ -37,10 +37,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 
-airproxy-core      = { path = "crates/airproxy-core" }
-airproxy-provider  = { path = "crates/airproxy-provider" }
-airproxy-openai    = { path = "crates/airproxy-openai" }
-airproxy-anthropic = { path = "crates/airproxy-anthropic" }
-airproxy-stages    = { path = "crates/airproxy-stages" }
-airproxy-config    = { path = "crates/airproxy-config" }
-airproxy-http      = { path = "crates/airproxy-http" }
+ai-engine-core      = { path = "crates/ai-engine-core" }
+ai-engine-provider  = { path = "crates/ai-engine-provider" }
+ai-engine-openai    = { path = "crates/ai-engine-openai" }
+ai-engine-anthropic = { path = "crates/ai-engine-anthropic" }
+ai-engine-stages    = { path = "crates/ai-engine-stages" }
+ai-engine-config    = { path = "crates/ai-engine-config" }
+ai-engine-http      = { path = "crates/ai-engine-http" }
