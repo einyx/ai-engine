@@ -139,3 +139,22 @@ fn manual_partition_validates_complete_cover() {
     );
     assert!(err.is_err());
 }
+
+#[test]
+fn for_node_returns_assignment_for_known_node() {
+    let caps = vec![cap("a", 16, 100), cap("b", 16, 100)];
+    let m = auto_partition(
+        "m",
+        &caps,
+        12,
+        1024 * 1024 * 1024,
+        1024 * 1024 * 1024,
+        256 * 1024 * 1024,
+    )
+    .unwrap();
+    let a = m.for_node("a").unwrap();
+    assert_eq!(a.node_id, "a");
+    let b = m.for_node("b").unwrap();
+    assert_eq!(b.node_id, "b");
+    assert!(m.for_node("missing").is_none());
+}

@@ -10,6 +10,14 @@ pub struct PartitionManifest {
     pub assignments: Vec<NodeAssignment>,
 }
 
+impl PartitionManifest {
+    /// Find the assignment for a given node id. Returns `None` if the node
+    /// isn't in the manifest.
+    pub fn for_node(&self, node_id: &str) -> Option<&NodeAssignment> {
+        self.assignments.iter().find(|a| a.node_id == node_id)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeAssignment {
     pub node_id: String,
