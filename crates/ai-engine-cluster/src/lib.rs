@@ -6,6 +6,7 @@
 pub mod capability;
 pub mod partition;
 pub mod protocol;
+pub mod tensor_io;
 pub mod tls;
 pub mod transport;
 

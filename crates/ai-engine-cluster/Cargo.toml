@@ -12,6 +12,7 @@ ai-engine-runtime.workspace = true
 ai-engine-tokenizer.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+burn = { workspace = true, features = ["std"] }
 bytemuck.workspace = true
 bytes.workspace = true
 futures.workspace = true
