@@ -45,4 +45,13 @@ ai-engine-stages    = { path = "crates/ai-engine-stages" }
 ai-engine-config    = { path = "crates/ai-engine-config" }
 ai-engine-http      = { path = "crates/ai-engine-http" }
 ai-engine-tokenizer = { path = "crates/ai-engine-tokenizer" }
+ai-engine-runtime = { path = "crates/ai-engine-runtime" }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+burn = { version = "0.21", default-features = false }
+burn-ndarray = "0.21"
+burn-cuda = "0.21"
+burn-wgpu = "0.21"
+safetensors = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+half = "2"
+memmap2 = "0.9"
