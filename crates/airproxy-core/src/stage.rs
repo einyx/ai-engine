@@ -1,11 +1,13 @@
 use crate::ctx::{GatewayResponse, RequestCtx};
 use crate::error::GatewayError;
 
+#[derive(Debug)]
 pub enum StageOutcome {
     Continue,
     Respond(GatewayResponse),
 }
 
+#[derive(Debug)]
 pub struct StageError {
     pub stage: &'static str,
     pub error: GatewayError,

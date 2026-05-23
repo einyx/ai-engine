@@ -6,3 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+airproxy-core.workspace = true
+airproxy-provider.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+globset.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+http = { workspace = true }
+tokio = { workspace = true }

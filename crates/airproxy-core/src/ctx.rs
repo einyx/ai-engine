@@ -19,7 +19,7 @@ pub enum RequestBody {
     Empty,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct GatewayResponse {
     pub status: u16,            // 0 means "default 200"
     pub headers: HeaderMap,
