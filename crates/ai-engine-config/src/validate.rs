@@ -14,8 +14,8 @@ pub fn validate(cfg: &Config) -> anyhow::Result<()> {
         if !ids.insert(&p.id) {
             anyhow::bail!("duplicate provider id `{}`", p.id);
         }
-        if !matches!(p.kind.as_str(), "openai" | "anthropic") {
-            anyhow::bail!("unknown provider kind `{}` (provider `{}`); expected `openai` or `anthropic`", p.kind, p.id);
+        if !matches!(p.kind.as_str(), "openai" | "anthropic" | "local-cluster") {
+            anyhow::bail!("unknown provider kind `{}` (provider `{}`); expected `openai`, `anthropic`, or `local-cluster`", p.kind, p.id);
         }
     }
 

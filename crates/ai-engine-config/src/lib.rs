@@ -18,6 +18,8 @@ pub struct Config {
     pub routes: Vec<Route>,
     #[serde(default)]
     pub pipeline: HashMap<String, Pipeline>,
+    #[serde(default, rename = "cluster")]
+    pub clusters: Vec<Cluster>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +80,9 @@ fn default_max_bytes() -> usize {
 pub struct Provider {
     pub id: String,
     pub kind: String,
+    /// Required for HTTP-based providers (`openai`, `anthropic`). Omitted for
+    /// `local-cluster` providers which target a [[cluster]] by id instead.
+    #[serde(default)]
     pub base_url: String,
     /// Optional: omit for Ollama, vLLM, LM Studio, and other local OpenAI-
     /// compatible servers that don't require authentication.
@@ -89,6 +94,9 @@ pub struct Provider {
     pub http2: bool,
     #[serde(default)]
     pub extra_headers: HashMap<String, String>,
+    /// References a `[[cluster]] id` when `kind = "local-cluster"`.
+    #[serde(default)]
+    pub cluster: Option<String>,
 }
 fn default_timeout() -> u64 {
     120
@@ -113,6 +121,59 @@ pub struct RouteMatch {
 #[derive(Debug, Deserialize)]
 pub struct Pipeline {
     pub stages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Cluster {
+    pub id: String,
+    pub leader: String,
+    pub quic_bind: String,
+    #[serde(default = "default_protocol_version")]
+    pub protocol_version: u16,
+    #[serde(default = "default_join_timeout")]
+    pub join_timeout_secs: u64,
+    #[serde(default = "default_heartbeat")]
+    pub heartbeat_interval_secs: u64,
+    pub model: ClusterModel,
+    #[serde(default, rename = "node")]
+    pub nodes: Vec<ClusterNode>,
+    #[serde(default, rename = "partition_override")]
+    pub partition_override: Vec<PartitionOverride>,
+}
+fn default_protocol_version() -> u16 {
+    1
+}
+fn default_join_timeout() -> u64 {
+    30
+}
+fn default_heartbeat() -> u64 {
+    5
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterModel {
+    pub id: String,
+    pub config_path: String,
+    pub weights_path: String,
+    pub tokenizer_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterNode {
+    pub id: String,
+    pub addr: String,
+    pub cert_fingerprint: String,
+    pub backend: String,
+    #[serde(default)]
+    pub device_index: usize,
+    #[serde(default)]
+    pub max_memory_mib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PartitionOverride {
+    pub node: String,
+    pub layers: String,
 }
 
 impl Config {

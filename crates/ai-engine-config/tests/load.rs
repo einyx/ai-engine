@@ -206,6 +206,62 @@ stages = ["forward", "log"]
 }
 
 #[test]
+fn parses_cluster_config() {
+    let toml = r#"
+[server]
+bind = "127.0.0.1:0"
+
+[auth]
+mode = "passthrough"
+
+[[cluster]]
+id = "home"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.model]
+id = "llama-3-70b"
+config_path = "/srv/models/llama-3-70b/config.json"
+weights_path = "/srv/models/llama-3-70b"
+tokenizer_path = "/srv/models/llama-3-70b/tokenizer.json"
+
+[[cluster.node]]
+id = "node-a"
+addr = "192.168.1.10:7700"
+cert_fingerprint = "sha256:abc123"
+backend = "cuda"
+
+[[cluster.node]]
+id = "node-b"
+addr = "192.168.1.11:7700"
+cert_fingerprint = "sha256:def456"
+backend = "metal"
+
+[[provider]]
+id = "home-cluster"
+kind = "local-cluster"
+cluster = "home"
+
+[[route]]
+match = { model = "llama-3-70b" }
+provider = "home-cluster"
+
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let cfg = ai_engine_config::Config::from_str(toml).unwrap();
+    assert_eq!(cfg.clusters.len(), 1);
+    assert_eq!(cfg.clusters[0].id, "home");
+    assert_eq!(cfg.clusters[0].leader, "node-a");
+    assert_eq!(cfg.clusters[0].nodes.len(), 2);
+    assert_eq!(cfg.clusters[0].model.id, "llama-3-70b");
+    assert!(cfg
+        .providers
+        .iter()
+        .any(|p| p.kind == "local-cluster" && p.cluster.as_deref() == Some("home")));
+}
+
+#[test]
 fn defaults_applied() {
     let cfg = Config::from_str(MINIMAL).unwrap();
     assert_eq!(cfg.server.shutdown_grace_secs, 30);
