@@ -307,3 +307,105 @@ async fn cluster_generate_5_tokens_matches_single_node_baseline() {
         "cluster generation must match single-node greedy generation"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn asymmetric_partition_via_assignment_matches_single_node() {
+    // Toy llama has 4 layers. Use an asymmetric partition: w1 takes 0..3 (three
+    // layers), w2 takes 3..4 (one layer). Leader hosts no layers (0..0). This
+    // layout deliberately differs from the even-split (0..2 / 2..4) used in the
+    // other tests, proving that the Assignment path — not a fallback formula —
+    // is driving which weights each worker loads.
+    let fix = fixture();
+    let cfg = ModelConfig::from_file(&fix.join("config.json")).unwrap();
+    let tok = HfTokenizer::from_path(fix.join("tokenizer.json")).unwrap();
+    let prompt = "The quick brown fox";
+    let ids: Vec<u32> = tok.encode(prompt).unwrap();
+    let ids_i32: Vec<i32> = ids.iter().map(|x| *x as i32).collect();
+
+    let baseline_tokens = single_node_greedy_5(&fix, &cfg, &ids_i32);
+
+    let w1_id = generate_node_identity("w1").unwrap();
+    let w1_ep = server_endpoint(&w1_id, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let w1_addr = w1_ep.local_addr().unwrap();
+    let w2_id = generate_node_identity("w2").unwrap();
+    let w2_ep = server_endpoint(&w2_id, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let w2_addr = w2_ep.local_addr().unwrap();
+
+    let model_path = fix.join("model.safetensors");
+    let cfg_for_w1 = cfg.clone();
+    let mp1 = model_path.clone();
+    let _w1_task = tokio::spawn(async move {
+        run_worker_full::<B>(
+            w1_ep,
+            "w1".to_string(),
+            BackendKind::Cpu,
+            mp1,
+            cfg_for_w1,
+        )
+        .await
+    });
+    let cfg_for_w2 = cfg.clone();
+    let mp2 = model_path.clone();
+    let _w2_task = tokio::spawn(async move {
+        run_worker_full::<B>(
+            w2_ep,
+            "w2".to_string(),
+            BackendKind::Cpu,
+            mp2,
+            cfg_for_w2,
+        )
+        .await
+    });
+
+    let leader_id = generate_node_identity("leader").unwrap();
+    let lcfg = LeaderConfig {
+        cluster_id: "test".into(),
+        leader_node_id: "leader".into(),
+        model_id: "toy".into(),
+        n_layers: cfg.n_layers,
+        layer_bytes: 256 * 1024,
+        embed_output_bytes: 256 * 1024,
+        per_node_overhead: 64 * 1024,
+        workers: vec![
+            WorkerEndpoint {
+                node_id: "w1".into(),
+                addr: w1_addr,
+                fingerprint: w1_id.fingerprint.clone(),
+            },
+            WorkerEndpoint {
+                node_id: "w2".into(),
+                addr: w2_addr,
+                fingerprint: w2_id.fingerprint.clone(),
+            },
+        ],
+        // ASYMMETRIC: w1 gets 3 layers, w2 gets 1 layer. Leader hosts none.
+        // 0..3 + 3..4 = full 4-layer coverage, contiguous and complete.
+        partition_override: Some(vec![
+            ("w1".to_string(), 0..3),
+            ("w2".to_string(), 3..4),
+        ]),
+    };
+
+    let mut leader = ClusterLeader::start(&leader_id, lcfg).await.unwrap();
+    let cluster_tokens = leader
+        .generate::<B>(
+            &model_path,
+            &cfg,
+            0..0, // leader hosts no layers
+            &ids_i32,
+            5,
+            SamplingConfig {
+                temperature: 0.0,
+                top_p: None,
+                top_k: None,
+                seed: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        cluster_tokens, baseline_tokens,
+        "asymmetric partition via Assignment must match single-node baseline"
+    );
+}
