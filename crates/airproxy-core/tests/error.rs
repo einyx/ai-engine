@@ -9,7 +9,7 @@ fn status_codes_match_spec() {
         GatewayError::NoRouteForModel { model: "gpt-x".into() }.http_status(),
         502
     );
-    assert_eq!(GatewayError::Internal("oops".into()).http_status(), 500);
+    assert_eq!(GatewayError::Internal(anyhow::anyhow!("oops")).http_status(), 500);
 }
 
 #[test]

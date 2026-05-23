@@ -11,4 +11,5 @@ anyhow.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 bytes.workspace = true
