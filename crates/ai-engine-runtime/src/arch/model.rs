@@ -4,9 +4,11 @@ use crate::arch::{
     attention::Attention,
     ffn::SwiGluFfn,
     rmsnorm::RmsNorm,
+    rope::RotaryEmbedding,
 };
 use crate::config::ModelConfig;
 use crate::kv_cache::KvCacheSlot;
+use crate::loader::LoadedWeights;
 use burn::tensor::{backend::Backend, Distribution, Int, Tensor};
 
 pub struct Model<B: Backend> {
@@ -90,6 +92,98 @@ impl<B: Backend> Model<B> {
             head_dim: cfg.head_dim,
             max_seq: cfg.max_position_embeddings,
         }
+    }
+
+    /// Production constructor: build a `Model` from `LoadedWeights` (typically
+    /// produced by the safetensors loader) and a `ModelConfig`.
+    ///
+    /// HF safetensors stores `Linear` weights as `[out_features, in_features]`,
+    /// but our primitives expect `[in, out]` for the `x @ W` matmul. Every
+    /// projection is transposed via `swap_dims(0, 1)` here.
+    pub fn from_loaded(
+        cfg: &ModelConfig,
+        weights: LoadedWeights<B>,
+        device: &B::Device,
+    ) -> anyhow::Result<Self> {
+        let embed_tensor = weights
+            .embedding
+            .ok_or_else(|| anyhow::anyhow!("embedding required but not loaded"))?;
+        let embedding = TokenEmbedding::new(embed_tensor.clone());
+
+        let final_norm = RmsNorm::new(
+            weights
+                .final_norm
+                .ok_or_else(|| anyhow::anyhow!("final_norm required but not loaded"))?,
+            cfg.rms_norm_eps,
+        );
+
+        // Output projection: tied or untied.
+        //
+        // Tied case: `lm_head.weight == embed_tokens.weight` in HF Llama; both
+        // have shape `[vocab, hidden]`. Our `OutputProjection` expects weight
+        // shape `[hidden, vocab]` for the `x @ W` matmul. So when tied,
+        // transpose.
+        //
+        // Untied case: `weights.output_proj` is the lm_head tensor, which HF
+        // serializes as `[vocab, hidden]`. Same transpose applies.
+        let output_weight = match (cfg.tie_word_embeddings, weights.output_proj) {
+            (true, _) => embed_tensor.swap_dims(0, 1),
+            (false, Some(w)) => w.swap_dims(0, 1),
+            (false, None) => anyhow::bail!("untied output projection missing"),
+        };
+        let output = OutputProjection::new(output_weight);
+
+        if weights.layers.len() != cfg.n_layers {
+            anyhow::bail!(
+                "expected {} layers, got {}",
+                cfg.n_layers,
+                weights.layers.len()
+            );
+        }
+
+        let mut blocks = Vec::with_capacity(weights.layers.len());
+        for layer in weights.layers {
+            let attn_norm = RmsNorm::new(layer.attn_norm, cfg.rms_norm_eps);
+            let ffn_norm = RmsNorm::new(layer.ffn_norm, cfg.rms_norm_eps);
+            let rope = RotaryEmbedding::new(
+                cfg.head_dim,
+                cfg.max_position_embeddings,
+                cfg.rope_theta,
+                device,
+            );
+            // HF stores each projection as [out, in]; transpose to [in, out].
+            let attn = Attention::new(
+                layer.q_proj.swap_dims(0, 1),
+                layer.k_proj.swap_dims(0, 1),
+                layer.v_proj.swap_dims(0, 1),
+                layer.o_proj.swap_dims(0, 1),
+                rope,
+                cfg.n_heads,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            );
+            let ffn = SwiGluFfn::new(
+                layer.ffn_gate.swap_dims(0, 1),
+                layer.ffn_up.swap_dims(0, 1),
+                layer.ffn_down.swap_dims(0, 1),
+            );
+            blocks.push(DecoderBlock {
+                attn_norm,
+                attn,
+                ffn_norm,
+                ffn,
+            });
+        }
+
+        Ok(Self {
+            embedding,
+            blocks,
+            final_norm,
+            output,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            max_seq: cfg.max_position_embeddings,
+        })
     }
 
     /// Used by the shape test: each block gets a fresh KV cache.
