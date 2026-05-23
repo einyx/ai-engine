@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod signal;
+pub mod worker_main;
 
 /// Initialize the global tracing subscriber. Idempotent if it's the first call;
 /// subsequent calls (e.g., from tests) are silently ignored.

@@ -29,7 +29,9 @@ arc-swap.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 clap.workspace = true
+burn-ndarray.workspace = true
 dirs.workspace = true
+hostname.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

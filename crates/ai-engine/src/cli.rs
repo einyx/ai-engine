@@ -15,4 +15,9 @@ pub struct Cli {
     /// Validate the configuration and exit without serving.
     #[arg(long)]
     pub check: bool,
+
+    /// Override the auto-detected node identifier (defaults to hostname).
+    /// Used to disambiguate role in cluster mode.
+    #[arg(long)]
+    pub node_id: Option<String>,
 }
