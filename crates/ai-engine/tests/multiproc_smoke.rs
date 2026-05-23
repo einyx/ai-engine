@@ -88,6 +88,14 @@ addr = "127.0.0.1:{w2_quic_port}"
 cert_fingerprint = "{w2_fp}"
 backend = "cpu"
 
+[[cluster.partition_override]]
+node = "worker-1"
+layers = "0..2"
+
+[[cluster.partition_override]]
+node = "worker-2"
+layers = "2..4"
+
 [[provider]]
 id = "smoke-cluster"
 kind = "local-cluster"

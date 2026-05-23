@@ -63,7 +63,6 @@ async fn worker_failure_mid_request_returns_error_to_leader() {
             BackendKind::Cpu,
             mp1,
             cfg_for_w1,
-            1..3,
         )
         .await
     });
@@ -76,7 +75,6 @@ async fn worker_failure_mid_request_returns_error_to_leader() {
             BackendKind::Cpu,
             mp2,
             cfg_for_w2,
-            3..4,
         )
         .await
     });
@@ -102,6 +100,8 @@ async fn worker_failure_mid_request_returns_error_to_leader() {
                 fingerprint: w2_id.fingerprint.clone(),
             },
         ],
+        // Leader hosts no layers (0..0); workers cover all 4.
+        partition_override: Some(vec![("w1".into(), 0..2), ("w2".into(), 2..4)]),
     };
 
     let mut leader = ClusterLeader::start(&leader_id, lcfg).await.unwrap();
@@ -124,7 +124,7 @@ async fn worker_failure_mid_request_returns_error_to_leader() {
     let model_path_for_fw = model_path.clone();
     let leader_task = tokio::spawn(async move {
         leader
-            .full_forward_for_test::<B>(&model_path_for_fw, &cfg_for_fw, 0..1, &ids_i32)
+            .full_forward_for_test::<B>(&model_path_for_fw, &cfg_for_fw, 0..0, &ids_i32)
             .await
     });
 

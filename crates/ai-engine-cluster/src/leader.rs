@@ -1,5 +1,5 @@
 use crate::capability::Capability;
-use crate::partition::{auto_partition, PartitionManifest};
+use crate::partition::{auto_partition, manual_partition, PartitionManifest};
 use crate::protocol::codec::{decode, encode};
 use crate::protocol::control::{LeaderToWorker, WorkerToLeader};
 use crate::protocol::data::{ActivationHeader, Dtype};
@@ -42,6 +42,9 @@ pub struct LeaderConfig {
     pub embed_output_bytes: u64,
     pub per_node_overhead: u64,
     pub workers: Vec<WorkerEndpoint>,
+    /// Optional explicit partition. When `Some`, bypasses `auto_partition`
+    /// and uses `manual_partition` with the provided node/range pairs.
+    pub partition_override: Option<Vec<(String, Range<usize>)>>,
 }
 
 /// Per-worker connection state owned by the leader after the join handshake.
@@ -58,7 +61,6 @@ pub struct WorkerConnection {
 /// Leader after startup: workers joined, capabilities collected, manifest computed.
 pub struct ClusterLeader {
     manifest: PartitionManifest,
-    #[allow(dead_code)] // Task 10 will use these to send Assignment frames.
     connections: Vec<WorkerConnection>,
 }
 
@@ -131,14 +133,36 @@ impl ClusterLeader {
             });
         }
 
-        let manifest = auto_partition(
-            &cfg.model_id,
-            &capabilities,
-            cfg.n_layers,
-            cfg.layer_bytes,
-            cfg.embed_output_bytes,
-            cfg.per_node_overhead,
-        )?;
+        let manifest = if let Some(ranges) = cfg.partition_override.clone() {
+            manual_partition(
+                &cfg.model_id,
+                &capabilities,
+                cfg.n_layers,
+                ranges,
+                cfg.layer_bytes,
+                cfg.embed_output_bytes,
+                cfg.per_node_overhead,
+            )?
+        } else {
+            auto_partition(
+                &cfg.model_id,
+                &capabilities,
+                cfg.n_layers,
+                cfg.layer_bytes,
+                cfg.embed_output_bytes,
+                cfg.per_node_overhead,
+            )?
+        };
+
+        // Phase 3: distribute Assignment to each worker over the existing
+        // control bidi stream.
+        for wc in connections.iter_mut() {
+            let assignment = LeaderToWorker::Assignment {
+                manifest: manifest.clone(),
+                model_id: cfg.model_id.clone(),
+            };
+            write_frame(&mut wc.control_send, &encode(&assignment)?).await?;
+        }
 
         Ok(Self {
             manifest,

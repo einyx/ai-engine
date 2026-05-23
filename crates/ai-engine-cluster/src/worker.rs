@@ -15,7 +15,6 @@ use ai_engine_runtime::loader::load_range;
 use burn::tensor::backend::Backend;
 use quinn::Endpoint;
 use std::collections::HashMap;
-use std::ops::Range;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -79,7 +78,6 @@ pub async fn run_worker_full<B>(
     backend: BackendKind,
     model_path: PathBuf,
     cfg: ModelConfig,
-    layer_range: Range<usize>,
 ) -> anyhow::Result<()>
 where
     B: Backend,
@@ -103,6 +101,18 @@ where
     write_frame(&mut send, &encode(&ack)?).await?;
     let cap = detect_capability(&node_id, backend, 0, None)?;
     write_frame(&mut send, &encode(&WorkerToLeader::Capability(cap))?).await?;
+
+    // Wait for the leader's Assignment, then extract this worker's layer range.
+    let assn_bytes = read_frame(&mut recv).await?;
+    let assn: LeaderToWorker = decode(&assn_bytes)?;
+    let layer_range = match assn {
+        LeaderToWorker::Assignment { manifest, .. } => manifest
+            .for_node(&node_id)
+            .ok_or_else(|| anyhow::anyhow!("no assignment for {node_id} in manifest"))?
+            .layer_range
+            .clone(),
+        other => anyhow::bail!("expected Assignment, got {other:?}"),
+    };
 
     // Load this worker's layer range from disk.
     let weights = load_range::<B>(&model_path, &cfg, layer_range.clone(), false, false, &device)?;

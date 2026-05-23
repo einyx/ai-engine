@@ -108,7 +108,6 @@ async fn cluster_provider_chat_returns_completion_from_real_cluster() {
             BackendKind::Cpu,
             mp1,
             cfg_for_w1,
-            1..3,
         )
         .await
     });
@@ -121,7 +120,6 @@ async fn cluster_provider_chat_returns_completion_from_real_cluster() {
             BackendKind::Cpu,
             mp2,
             cfg_for_w2,
-            3..4,
         )
         .await
     });
@@ -147,6 +145,8 @@ async fn cluster_provider_chat_returns_completion_from_real_cluster() {
                 fingerprint: w2_id.fingerprint.clone(),
             },
         ],
+        // Leader hosts no layers (0..0); workers cover all 4.
+        partition_override: Some(vec![("w1".into(), 0..2), ("w2".into(), 2..4)]),
     };
 
     let leader = ClusterLeader::start(&leader_id, lcfg).await.unwrap();
@@ -155,7 +155,7 @@ async fn cluster_provider_chat_returns_completion_from_real_cluster() {
         model_cfg: cfg.clone(),
         model_path: model_path.clone(),
         tokenizer,
-        leader_layers: 0..1,
+        leader_layers: 0..0,
     };
 
     let provider = ClusterProvider::new_leader_with_state(

@@ -130,6 +130,16 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
                 std::path::Path::new(&cluster_cfg.model.config_path),
             )?;
             let n_layers = model_cfg.n_layers;
+            let partition_override = if cluster_cfg.partition_override.is_empty() {
+                None
+            } else {
+                let parsed: Result<Vec<_>, _> = cluster_cfg
+                    .partition_override
+                    .iter()
+                    .map(|po| parse_layer_range(&po.layers).map(|r| (po.node.clone(), r)))
+                    .collect();
+                Some(parsed?)
+            };
             let lcfg = ai_engine_cluster::leader::LeaderConfig {
                 cluster_id: cluster_id.clone(),
                 leader_node_id: cluster_cfg.leader.clone(),
@@ -140,6 +150,7 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
                 embed_output_bytes: 256 * 1024,
                 per_node_overhead: 64 * 1024,
                 workers: worker_endpoints,
+                partition_override,
             };
             let leader = ai_engine_cluster::leader::ClusterLeader::start(&identity, lcfg).await?;
             let tokenizer =
@@ -187,6 +198,25 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
     }
 
     build_gateway_app_state(cfg, cluster_providers)
+}
+
+/// Parse a TOML `layers = "start..end"` string into a `Range<usize>`.
+fn parse_layer_range(s: &str) -> anyhow::Result<std::ops::Range<usize>> {
+    let (start, end) = s
+        .split_once("..")
+        .ok_or_else(|| anyhow::anyhow!("invalid layer range `{s}`: missing `..`"))?;
+    let start: usize = start
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid layer range `{s}` start: {e}"))?;
+    let end: usize = end
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid layer range `{s}` end: {e}"))?;
+    if start >= end {
+        anyhow::bail!("invalid layer range `{s}`: start must be < end");
+    }
+    Ok(start..end)
 }
 
 /// Load this node's TLS identity from disk, or generate + persist fresh.
