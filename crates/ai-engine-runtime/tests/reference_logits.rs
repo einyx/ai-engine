@@ -67,17 +67,12 @@ fn forward_matches_reference_logits_within_tolerance() {
         argmax_us.0, argmax_ref.0
     );
 
-    // The reference was generated with dtype=bfloat16 (see config.json), so the
-    // reference logits are bf16-rounded values cast back to f32. bf16 has only
-    // 8 mantissa bits, giving a per-op rounding error around 2^-8 ≈ 4e-3 near
-    // unit magnitude, which accumulates over the 4 transformer layers + lm_head
-    // matmul into the few-times-1e-3 range we observe. Our f32 forward agrees
-    // with the bf16 reference to within that bf16 noise floor.
-    // TODO(plan-1-task-12): tighten tolerance to 1e-3 once we have an f32
-    // reference (re-run the Python fixture script in f32) — bf16 reference is
-    // the limiting factor here, not our implementation.
+    // The toy fixture stores weights in bf16 (matches real HF Llama checkpoints)
+    // but the Python reference script upcasts to f32 before the forward pass,
+    // matching what our loader does. So both sides compute in f32 and we observe
+    // ~1e-5 max diff in practice — well below the 1e-3 spec gate.
     assert!(
-        max_abs_diff < 1e-2,
+        max_abs_diff < 1e-3,
         "bytes-tolerant gate failed: max |a-b| = {max_abs_diff}"
     );
 }

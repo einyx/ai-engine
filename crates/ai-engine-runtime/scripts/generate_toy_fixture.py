@@ -57,7 +57,15 @@ with open(OUT / "config.json", "w") as f:
 model = LlamaForCausalLM(cfg).to(torch.bfloat16)
 model.train(False)  # inference mode (no dropout)
 
+# Save weights as bf16 (HF Llama checkpoints ship in bf16; matches reality).
 save_model(model, str(OUT / "model.safetensors"))
+
+# Cast to f32 BEFORE running the reference forward pass. The Rust runtime
+# loader upcasts bf16->f32 at load time and computes in f32, so the reference
+# must do the same to give us a tight (<1e-3) correctness gate. Without this
+# upcast the reference carries ~4e-3 of per-op bf16 quantization noise that
+# is impossible for the (more precise) Rust forward to match.
+model = model.to(torch.float32)
 
 tok = Tokenizer(BPE(unk_token="<unk>"))
 tok.pre_tokenizer = ByteLevel(add_prefix_space=False)
