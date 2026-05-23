@@ -52,7 +52,7 @@ stages = ["auth", "content_policy", "model_route", "forward", "log"]
 #[test]
 fn build_app_state_populates_pipelines_and_models() {
     let cfg = Config::from_str(FULL_TOML).unwrap();
-    let state = ai_engine::app::build_app_state(&cfg).unwrap();
+    let state = ai_engine::app::build_app_state(&cfg, "anywhere").unwrap();
     assert!(state.pipelines.contains_key("/v1/chat/completions"));
     assert!(state.pipelines.contains_key("/v1/messages"));
     assert!(!state.pipelines.contains_key("/v1/embeddings")); // no [pipeline] block for it
@@ -63,6 +63,6 @@ fn build_app_state_populates_pipelines_and_models() {
 #[test]
 fn build_app_state_works_with_ollama_no_api_key() {
     let cfg = Config::from_str(FULL_TOML).unwrap();
-    let _state = ai_engine::app::build_app_state(&cfg).unwrap();
+    let _state = ai_engine::app::build_app_state(&cfg, "anywhere").unwrap();
     // If we got here, the no-api-key Ollama provider didn't trip provider construction.
 }

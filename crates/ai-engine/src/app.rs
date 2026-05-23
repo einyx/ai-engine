@@ -15,6 +15,54 @@ use ai_engine_stages::{
 };
 use arc_swap::ArcSwap;
 
+/// Role this binary instance plays in a (possibly clustered) deployment.
+#[derive(Debug, Clone)]
+pub enum NodeRole {
+    /// This node is not in any cluster — pure gateway mode.
+    Gateway,
+    /// This node is the leader of one or more clusters AND/OR a gateway.
+    Leader { cluster_ids: Vec<String> },
+    /// This node is a worker in exactly one cluster.
+    Worker {
+        cluster_id: String,
+        leader_addr: String,
+    },
+}
+
+/// Resolve the role of this node given the config + its node id.
+///
+/// Worker takes precedence: if `node_id` appears as a non-leader node in any
+/// cluster, this node is a worker. Otherwise, every cluster where `node_id`
+/// matches the `leader` field contributes to a Leader role. If neither applies,
+/// the node is a pure Gateway.
+pub fn resolve_role(cfg: &Config, node_id: &str) -> NodeRole {
+    let mut leader_clusters = Vec::new();
+    for cluster in &cfg.clusters {
+        if cluster.leader == node_id {
+            leader_clusters.push(cluster.id.clone());
+        } else if cluster.nodes.iter().any(|n| n.id == node_id) {
+            // We're a worker in this cluster — find the leader's addr.
+            let leader_addr = cluster
+                .nodes
+                .iter()
+                .find(|n| n.id == cluster.leader)
+                .map(|n| n.addr.clone())
+                .unwrap_or_default();
+            return NodeRole::Worker {
+                cluster_id: cluster.id.clone(),
+                leader_addr,
+            };
+        }
+    }
+    if leader_clusters.is_empty() {
+        NodeRole::Gateway
+    } else {
+        NodeRole::Leader {
+            cluster_ids: leader_clusters,
+        }
+    }
+}
+
 /// Build a complete `AppState` from a validated `Config`.
 ///
 /// This is the wiring layer: providers are instantiated, stages are constructed
@@ -24,7 +72,31 @@ use arc_swap::ArcSwap;
 /// Routes recognized in v1: `/v1/chat/completions`, `/v1/messages`,
 /// `/v1/embeddings`. Routes in `[pipeline.…]` other than these are silently
 /// skipped (warned via tracing).
-pub fn build_app_state(cfg: &Config) -> anyhow::Result<Arc<AppState>> {
+///
+/// In cluster deployments, this also resolves the node's role: workers return
+/// a stripped `AppState` (no pipelines, no providers — they only run a QUIC
+/// listener via a separate worker entrypoint and respond to `/healthz`).
+pub fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<AppState>> {
+    let role = resolve_role(cfg, node_id);
+    if let NodeRole::Worker { .. } = &role {
+        // Worker mode: no HTTP pipelines, just health endpoints.
+        return Ok(Arc::new(AppState {
+            pipelines: HashMap::new(),
+            openai_models: vec![],
+            ready: AtomicBool::new(true),
+        }));
+    }
+
+    if let NodeRole::Leader { .. } = &role {
+        // Leader: pipeline construction (real cluster startup wired in Task 7).
+        todo!("leader-mode build_app_state requires async ClusterLeader::start; wired in Task 7")
+    }
+
+    build_gateway_app_state(cfg)
+}
+
+/// Construct the gateway-only AppState (no cluster providers).
+fn build_gateway_app_state(cfg: &Config) -> anyhow::Result<Arc<AppState>> {
     // --- providers ---
     let mut providers = ProviderRegistry::new();
     for p in &cfg.providers {

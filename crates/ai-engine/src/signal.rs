@@ -51,7 +51,7 @@ pub fn spawn_reload(cfg_path: PathBuf, state: Arc<AppState>) {
 
 fn reload(cfg_path: &std::path::Path, state: &Arc<AppState>) -> anyhow::Result<()> {
     let cfg = ai_engine_config::Config::load(cfg_path)?;
-    let new_state = crate::app::build_app_state(&cfg)?;
+    let new_state = crate::app::build_app_state(&cfg, "localhost")?;
     // Atomic per-pipeline swap. Routes only present in the new state are
     // ignored (would require re-binding the router). Routes removed from
     // the new config also stay live — callers see the previous pipeline.

@@ -65,7 +65,7 @@ stages = ["auth", "model_route", "forward", "log"]
 pub async fn spawn(cfg_toml: &str) -> String {
     let cfg = Config::from_str(cfg_toml).expect("config parse");
     let state: Arc<ai_engine_http::AppState> =
-        ai_engine::app::build_app_state(&cfg).expect("app state");
+        ai_engine::app::build_app_state(&cfg, "localhost").expect("app state");
     let router = ai_engine_http::build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
