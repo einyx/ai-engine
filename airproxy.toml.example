@@ -1,7 +1,11 @@
 # airproxy — example configuration
 #
-# Environment variables are interpolated as `${VAR}`. Missing variables are
-# a fatal startup error.
+# Environment variables of the form $ {VAR_NAME} (no space — written here
+# with a space in this comment to prevent self-substitution) are interpolated
+# from the process environment at load time. Missing variables are a fatal
+# startup error. Comments are NOT skipped by the interpolator, so any
+# placeholder in this file must either be a real variable or be defanged
+# (as above).
 
 [server]
 bind = "0.0.0.0:8080"
