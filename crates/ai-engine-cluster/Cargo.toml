@@ -1,0 +1,35 @@
+[package]
+name = "ai-engine-cluster"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ai-engine-core.workspace = true
+ai-engine-provider.workspace = true
+ai-engine-runtime.workspace = true
+ai-engine-tokenizer.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+bytemuck.workspace = true
+bytes.workspace = true
+futures.workspace = true
+postcard.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+sha2.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+burn = { workspace = true }
+burn-ndarray = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
