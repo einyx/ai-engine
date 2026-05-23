@@ -189,22 +189,18 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
     build_gateway_app_state(cfg, cluster_providers)
 }
 
-/// Load this node's TLS identity from disk, or generate fresh.
+/// Load this node's TLS identity from disk, or generate + persist fresh.
 ///
-/// Plan 3 simplification: we always (re)generate on startup so the file's
-/// only purpose is observability/debugging. Persistence + matching fingerprint
-/// updates land in v0.3.
+/// Persistence is required so the node's fingerprint stays stable across
+/// restarts — otherwise peers would need their `cert_fingerprint` config
+/// rewritten every bounce.
 fn load_or_generate_node_identity(
     node_id: &str,
 ) -> anyhow::Result<ai_engine_cluster::tls::NodeIdentity> {
     let dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".ai-engine");
-    let id = ai_engine_cluster::tls::generate_node_identity(node_id)?;
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(dir.join("node.crt"), &id.cert_pem);
-    let _ = std::fs::write(dir.join("node.key"), &id.key_pem);
-    Ok(id)
+    ai_engine_cluster::tls::load_or_generate_node_identity(node_id, &dir)
 }
 
 /// Construct the gateway-only AppState. `cluster_providers` are pre-built

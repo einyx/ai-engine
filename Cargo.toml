@@ -61,6 +61,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 sha2 = "0.10"
+pem = "3"
 sysinfo = "0.32"
 ai-engine-cluster = { path = "crates/ai-engine-cluster" }
 dirs = "5"

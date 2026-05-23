@@ -6,8 +6,8 @@
 //! layers, awaiting activations from the cluster leader.
 
 use ai_engine_cluster::{
-    capability::BackendKind, tls::generate_node_identity, transport::quic::server_endpoint,
-    worker::run_worker_full,
+    capability::BackendKind, tls::load_or_generate_node_identity,
+    transport::quic::server_endpoint, worker::run_worker_full,
 };
 use ai_engine_runtime::config::ModelConfig;
 
@@ -29,7 +29,10 @@ pub async fn run_worker(
         .find(|n| n.id == node_id)
         .ok_or_else(|| anyhow::anyhow!("node `{node_id}` not in cluster `{cluster_id}`"))?;
 
-    let identity = generate_node_identity(node_id)?;
+    let identity_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".ai-engine");
+    let identity = load_or_generate_node_identity(node_id, &identity_dir)?;
     eprintln!(
         "ai-engine worker `{}` fingerprint: {}",
         node_id, identity.fingerprint

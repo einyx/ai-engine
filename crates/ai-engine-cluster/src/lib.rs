@@ -21,7 +21,9 @@ pub use capability::{detect_capability, BackendKind, Capability};
 pub use leader::{ClusterLeader, LeaderConfig, WorkerEndpoint};
 pub use partition::{auto_partition, manual_partition, NodeAssignment, PartitionManifest};
 pub use provider::ClusterProvider;
-pub use tls::{fingerprint_sha256, generate_node_identity, NodeIdentity};
+pub use tls::{
+    fingerprint_sha256, generate_node_identity, load_or_generate_node_identity, NodeIdentity,
+};
 
 #[cfg(test)]
 mod smoke_compile_test {

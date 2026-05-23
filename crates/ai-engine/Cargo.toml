@@ -39,7 +39,8 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 async-openai = "0.27"
 futures.workspace = true
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
 serde_json.workspace = true
+tempfile = "3"
 tokio = { workspace = true }
 wiremock.workspace = true
