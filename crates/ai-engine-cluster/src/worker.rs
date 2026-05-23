@@ -68,10 +68,17 @@ pub async fn run_worker_handshake(
 /// Run a full worker: handshake, load its assigned layer range, then service
 /// activation frames in a loop until the connection closes.
 ///
-/// For each inbound uni stream the worker reads `(ActivationHeader, payload)`,
-/// runs its blocks over the activations, then opens an outbound uni stream and
-/// sends `(ActivationHeader, payload)` back. Per-request KV caches are kept in
-/// a `HashMap<Uuid, _>` and freed when `is_terminal=true` arrives.
+/// For each inbound bidi stream the worker reads `(ActivationHeader, payload)`
+/// on the recv side, runs its blocks over the activations, then writes
+/// `(ActivationHeader, payload)` back on the same stream's send side. Using
+/// bidi streams (Plan 4 Task 5) instead of paired uni streams naturally pairs
+/// each request with its response without any demultiplexing — quinn handles
+/// concurrent bidi streams from the same connection independently, which is
+/// what enables concurrent requests through one leader.
+///
+/// Per-request KV caches are kept in a `HashMap<Uuid, _>` keyed by the
+/// `request_id` in the activation header, and freed when `is_terminal=true`
+/// arrives.
 pub async fn run_worker_full<B>(
     endpoint: Endpoint,
     node_id: String,
@@ -155,13 +162,13 @@ where
     let mut request_caches: HashMap<Uuid, Vec<KvCacheSlot<B>>> = HashMap::new();
 
     loop {
-        let mut uni_in = match conn.accept_uni().await {
-            Ok(s) => s,
+        let (mut send_bi, mut recv_bi) = match conn.accept_bi().await {
+            Ok(streams) => streams,
             Err(_) => break, // connection closed
         };
-        let header_bytes = read_frame(&mut uni_in).await?;
+        let header_bytes = read_frame(&mut recv_bi).await?;
         let header: ActivationHeader = decode(&header_bytes)?;
-        let payload_bytes = read_frame(&mut uni_in).await?;
+        let payload_bytes = read_frame(&mut recv_bi).await?;
 
         let shape = [
             header.shape[0] as usize,
@@ -194,7 +201,9 @@ where
             x = block.forward(x, &positions, cache);
         }
 
-        // Send back the processed activations on a fresh outbound uni stream.
+        // Send the processed activations back on the same bidi stream's send
+        // side. quinn naturally pairs the request and response — no separate
+        // accept needed on the leader.
         let (out_bytes, out_shape) = tensor_to_bytes(x)?;
         let out_header = ActivationHeader {
             request_id: header.request_id,
@@ -207,10 +216,9 @@ where
             dtype: Dtype::F32,
             is_terminal: header.is_terminal,
         };
-        let mut uni_out = conn.open_uni().await?;
-        write_frame(&mut uni_out, &encode(&out_header)?).await?;
-        write_frame(&mut uni_out, &out_bytes).await?;
-        uni_out.finish()?;
+        write_frame(&mut send_bi, &encode(&out_header)?).await?;
+        write_frame(&mut send_bi, &out_bytes).await?;
+        send_bi.finish()?;
 
         if header.is_terminal {
             request_caches.remove(&header.request_id);

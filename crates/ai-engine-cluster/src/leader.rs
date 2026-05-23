@@ -370,9 +370,11 @@ where
     }
 
     // Send through each worker in order, waiting for response between hops.
-    // Each request opens its own bidi stream pair per hop (Task 5 will switch
-    // the worker side to accept_bi); for now this still uses uni streams
-    // matching the existing worker loop.
+    // Each hop opens its own bidi stream pair: the request goes out on the
+    // send side, the response comes back on the recv side. Plan 4 Task 5
+    // switched from uni-pair to bidi so that concurrent requests through one
+    // leader don't interleave (quinn pairs send/recv per bidi stream
+    // internally — there's no demultiplexing to do here).
     let request_id = session.request_id;
     let start_pos = session.current_pos;
     for conn in &session.worker_conns {
@@ -384,14 +386,13 @@ where
             dtype: Dtype::F32,
             is_terminal,
         };
-        let mut send_uni = conn.open_uni().await?;
-        write_frame(&mut send_uni, &encode(&header)?).await?;
-        write_frame(&mut send_uni, &bytes).await?;
-        send_uni.finish()?;
+        let (mut send_bi, mut recv_bi) = conn.open_bi().await?;
+        write_frame(&mut send_bi, &encode(&header)?).await?;
+        write_frame(&mut send_bi, &bytes).await?;
+        send_bi.finish()?;
 
-        let mut recv_uni = conn.accept_uni().await?;
-        let _hdr: ActivationHeader = decode(&read_frame(&mut recv_uni).await?)?;
-        let payload = read_frame(&mut recv_uni).await?;
+        let _hdr: ActivationHeader = decode(&read_frame(&mut recv_bi).await?)?;
+        let payload = read_frame(&mut recv_bi).await?;
         let shape_back = [shape[0], shape[1], shape[2]];
         x = tensor_from_bytes::<B>(&payload, shape_back, &device)?;
     }
