@@ -4,6 +4,7 @@
 //! `ai_engine_provider` against a cluster of nodes running QUIC.
 
 pub mod capability;
+pub mod leader;
 pub mod partition;
 pub mod protocol;
 pub mod tensor_io;
