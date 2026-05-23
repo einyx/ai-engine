@@ -3,6 +3,9 @@
 //! Distributed inference coordinator. Implements `Provider` from
 //! `ai_engine_provider` against a cluster of nodes running QUIC.
 
+pub mod capability;
+pub mod partition;
+pub mod protocol;
 pub mod tls;
 
 #[cfg(test)]
