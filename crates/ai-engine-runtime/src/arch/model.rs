@@ -186,6 +186,25 @@ impl<B: Backend> Model<B> {
         })
     }
 
+    /// Production single-stream forward. Caller owns the cache slots
+    /// (one per block) and they persist across calls within one request.
+    pub fn forward_with_caches(
+        &self,
+        token_ids: Tensor<B, 2, Int>,
+        start_pos: usize,
+        caches: &mut [KvCacheSlot<B>],
+    ) -> Tensor<B, 3> {
+        assert_eq!(caches.len(), self.blocks.len(), "one cache per block");
+        let [_batch, seq] = token_ids.dims();
+        let positions: Vec<i32> = (start_pos..start_pos + seq).map(|p| p as i32).collect();
+        let mut x = self.embedding.forward(token_ids);
+        for (block, cache) in self.blocks.iter().zip(caches.iter_mut()) {
+            x = block.forward(x, &positions, cache);
+        }
+        let x = self.final_norm.forward(x);
+        self.output.forward(x)
+    }
+
     /// Used by the shape test: each block gets a fresh KV cache.
     /// Production callers use `forward_with_caches` (added in Task 13).
     pub fn forward(&self, token_ids: Tensor<B, 2, Int>, start_pos: usize) -> Tensor<B, 3> {
