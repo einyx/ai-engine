@@ -2,10 +2,25 @@ use crate::capability::Capability;
 use crate::partition::{auto_partition, PartitionManifest};
 use crate::protocol::codec::{decode, encode};
 use crate::protocol::control::{LeaderToWorker, WorkerToLeader};
+use crate::protocol::data::{ActivationHeader, Dtype};
+use crate::tensor_io::{tensor_from_bytes, tensor_to_bytes};
 use crate::tls::NodeIdentity;
 use crate::transport::frame::{read_frame, write_frame};
 use crate::transport::quic::client_endpoint;
+use ai_engine_runtime::arch::attention::Attention;
+use ai_engine_runtime::arch::block::DecoderBlock;
+use ai_engine_runtime::arch::embedding::{OutputProjection, TokenEmbedding};
+use ai_engine_runtime::arch::ffn::SwiGluFfn;
+use ai_engine_runtime::arch::rmsnorm::RmsNorm;
+use ai_engine_runtime::arch::rope::RotaryEmbedding;
+use ai_engine_runtime::config::ModelConfig;
+use ai_engine_runtime::kv_cache::KvCacheSlot;
+use ai_engine_runtime::loader::load_range;
+use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
 use std::net::SocketAddr;
+use std::ops::Range;
+use std::path::Path;
+use uuid::Uuid;
 
 /// A worker the leader should dial during startup.
 #[derive(Debug, Clone)]
@@ -132,5 +147,157 @@ impl ClusterLeader {
 
     pub fn manifest(&self) -> &PartitionManifest {
         &self.manifest
+    }
+
+    /// Test-only helper: run a single prefill forward pass through the cluster
+    /// and return the last-position logits.
+    ///
+    /// Flow:
+    ///   embedding(ids) → leader_blocks → for each worker (open_uni →
+    ///   send (header,payload) → accept_uni → read (header,payload)) →
+    ///   final_norm + output_projection → slice last position.
+    ///
+    /// The leader's own weights (embedding, final_norm, output, and its layer
+    /// range) are loaded from disk at call time. Production code in Plan 3
+    /// loads once at startup.
+    pub async fn full_forward_for_test<B>(
+        &mut self,
+        model_path: &Path,
+        cfg: &ModelConfig,
+        leader_layers: Range<usize>,
+        token_ids: &[i32],
+    ) -> anyhow::Result<Vec<f32>>
+    where
+        B: Backend,
+        B::Device: Default,
+    {
+        let device = B::Device::default();
+        let weights = load_range::<B>(
+            model_path,
+            cfg,
+            leader_layers.clone(),
+            true,
+            true,
+            &device,
+        )?;
+
+        let embed_tensor = weights
+            .embedding
+            .ok_or_else(|| anyhow::anyhow!("embedding required for leader"))?;
+        let embedding = TokenEmbedding::new(embed_tensor.clone());
+        let final_norm = RmsNorm::new(
+            weights
+                .final_norm
+                .ok_or_else(|| anyhow::anyhow!("final_norm required for leader"))?,
+            cfg.rms_norm_eps,
+        );
+        // tied case: output projection = embedding^T
+        let output_weight = if cfg.tie_word_embeddings {
+            embed_tensor.swap_dims(0, 1)
+        } else {
+            weights
+                .output_proj
+                .ok_or_else(|| anyhow::anyhow!("untied output projection missing"))?
+                .swap_dims(0, 1)
+        };
+        let output = OutputProjection::new(output_weight);
+
+        // Build leader's blocks.
+        let mut leader_blocks: Vec<DecoderBlock<B>> =
+            Vec::with_capacity(leader_layers.len());
+        for layer in weights.layers {
+            let attn_norm = RmsNorm::new(layer.attn_norm, cfg.rms_norm_eps);
+            let ffn_norm = RmsNorm::new(layer.ffn_norm, cfg.rms_norm_eps);
+            let rope = RotaryEmbedding::new(
+                cfg.head_dim,
+                cfg.max_position_embeddings,
+                cfg.rope_theta,
+                &device,
+            );
+            let attn = Attention::new(
+                layer.q_proj.swap_dims(0, 1),
+                layer.k_proj.swap_dims(0, 1),
+                layer.v_proj.swap_dims(0, 1),
+                layer.o_proj.swap_dims(0, 1),
+                rope,
+                cfg.n_heads,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            );
+            let ffn = SwiGluFfn::new(
+                layer.ffn_gate.swap_dims(0, 1),
+                layer.ffn_up.swap_dims(0, 1),
+                layer.ffn_down.swap_dims(0, 1),
+            );
+            leader_blocks.push(DecoderBlock {
+                attn_norm,
+                attn,
+                ffn_norm,
+                ffn,
+            });
+        }
+
+        // Forward through leader's blocks with fresh per-block KV caches.
+        let seq = token_ids.len();
+        let ids = Tensor::<B, 2, Int>::from_data(
+            TensorData::new(token_ids.to_vec(), [1, seq]),
+            &device,
+        );
+        let mut x = embedding.forward(ids);
+        let positions: Vec<i32> = (0..seq as i32).collect();
+        let mut leader_caches: Vec<KvCacheSlot<B>> = (0..leader_blocks.len())
+            .map(|_| {
+                KvCacheSlot::<B>::new(
+                    1,
+                    cfg.n_kv_heads,
+                    cfg.max_position_embeddings,
+                    cfg.head_dim,
+                    &device,
+                )
+            })
+            .collect();
+        for (block, cache) in leader_blocks.iter().zip(leader_caches.iter_mut()) {
+            x = block.forward(x, &positions, cache);
+        }
+
+        // Relay through each worker in order. One uni stream out + one uni
+        // stream in per worker per request.
+        let request_id = Uuid::now_v7();
+        for wc in &self.connections {
+            let (bytes, shape) = tensor_to_bytes(x)?;
+            let header = ActivationHeader {
+                request_id,
+                seq_pos: 0,
+                shape: [shape[0] as u32, shape[1] as u32, shape[2] as u32],
+                dtype: Dtype::F32,
+                is_terminal: true, // single-shot prefill in this test
+            };
+            let mut send_uni = wc.conn.open_uni().await?;
+            write_frame(&mut send_uni, &encode(&header)?).await?;
+            write_frame(&mut send_uni, &bytes).await?;
+            send_uni.finish()?;
+
+            let mut recv_uni = wc.conn.accept_uni().await?;
+            let header_back: ActivationHeader =
+                decode(&read_frame(&mut recv_uni).await?)?;
+            let payload_back = read_frame(&mut recv_uni).await?;
+            let shape_back = [
+                header_back.shape[0] as usize,
+                header_back.shape[1] as usize,
+                header_back.shape[2] as usize,
+            ];
+            x = tensor_from_bytes::<B>(&payload_back, shape_back, &device)?;
+        }
+
+        // Final norm + output projection.
+        let x = final_norm.forward(x);
+        let logits = output.forward(x);
+
+        let last = logits
+            .slice([0..1, (seq - 1)..seq, 0..cfg.vocab_size])
+            .reshape([cfg.vocab_size]);
+        last.to_data()
+            .to_vec()
+            .map_err(|e| anyhow::anyhow!("to_vec: {e:?}"))
     }
 }
