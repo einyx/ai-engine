@@ -262,6 +262,162 @@ stages = ["forward", "log"]
 }
 
 #[test]
+fn cluster_leader_must_reference_existing_node() {
+    let toml = r#"
+[server]
+bind = "x"
+[auth]
+mode = "passthrough"
+[[cluster]]
+id = "c"
+leader = "missing-node"
+quic_bind = "0.0.0.0:0"
+[cluster.model]
+id = "m"
+config_path = "x"
+weights_path = "x"
+tokenizer_path = "x"
+[[cluster.node]]
+id = "node-a"
+addr = "127.0.0.1:0"
+cert_fingerprint = "sha256:x"
+backend = "cpu"
+[[provider]]
+id = "c-prov"
+kind = "local-cluster"
+cluster = "c"
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let err = ai_engine_config::Config::from_str(toml).unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("leader"));
+}
+
+#[test]
+fn local_cluster_provider_must_reference_existing_cluster() {
+    let toml = r#"
+[server]
+bind = "x"
+[auth]
+mode = "passthrough"
+[[provider]]
+id = "orphan"
+kind = "local-cluster"
+cluster = "does-not-exist"
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let err = ai_engine_config::Config::from_str(toml).unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("cluster"));
+}
+
+#[test]
+fn duplicate_cluster_node_ids_rejected() {
+    let toml = r#"
+[server]
+bind = "x"
+[auth]
+mode = "passthrough"
+[[cluster]]
+id = "c"
+leader = "a"
+quic_bind = "0.0.0.0:0"
+[cluster.model]
+id = "m"
+config_path = "x"
+weights_path = "x"
+tokenizer_path = "x"
+[[cluster.node]]
+id = "a"
+addr = "127.0.0.1:1"
+cert_fingerprint = "sha256:x"
+backend = "cpu"
+[[cluster.node]]
+id = "a"
+addr = "127.0.0.1:2"
+cert_fingerprint = "sha256:y"
+backend = "cpu"
+[[provider]]
+id = "p"
+kind = "local-cluster"
+cluster = "c"
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let err = ai_engine_config::Config::from_str(toml).unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("duplicate"));
+}
+
+#[test]
+fn duplicate_cluster_node_addrs_rejected() {
+    let toml = r#"
+[server]
+bind = "x"
+[auth]
+mode = "passthrough"
+[[cluster]]
+id = "c"
+leader = "a"
+quic_bind = "0.0.0.0:0"
+[cluster.model]
+id = "m"
+config_path = "x"
+weights_path = "x"
+tokenizer_path = "x"
+[[cluster.node]]
+id = "a"
+addr = "127.0.0.1:1"
+cert_fingerprint = "sha256:x"
+backend = "cpu"
+[[cluster.node]]
+id = "b"
+addr = "127.0.0.1:1"
+cert_fingerprint = "sha256:y"
+backend = "cpu"
+[[provider]]
+id = "p"
+kind = "local-cluster"
+cluster = "c"
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let err = ai_engine_config::Config::from_str(toml).unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("addr"));
+}
+
+#[test]
+fn unknown_backend_kind_rejected() {
+    let toml = r#"
+[server]
+bind = "x"
+[auth]
+mode = "passthrough"
+[[cluster]]
+id = "c"
+leader = "a"
+quic_bind = "0.0.0.0:0"
+[cluster.model]
+id = "m"
+config_path = "x"
+weights_path = "x"
+tokenizer_path = "x"
+[[cluster.node]]
+id = "a"
+addr = "127.0.0.1:1"
+cert_fingerprint = "sha256:x"
+backend = "tpu"
+[[provider]]
+id = "p"
+kind = "local-cluster"
+cluster = "c"
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let err = ai_engine_config::Config::from_str(toml).unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("backend"));
+}
+
+#[test]
 fn defaults_applied() {
     let cfg = Config::from_str(MINIMAL).unwrap();
     assert_eq!(cfg.server.shutdown_grace_secs, 30);

@@ -38,6 +38,73 @@ pub fn validate(cfg: &Config) -> anyhow::Result<()> {
         }
     }
 
+    // Cluster validation
+    let mut cluster_ids: HashSet<&String> = HashSet::new();
+    for cluster in &cfg.clusters {
+        if !cluster_ids.insert(&cluster.id) {
+            anyhow::bail!("duplicate cluster id `{}`", cluster.id);
+        }
+        // Leader must reference an existing node.
+        if !cluster.nodes.iter().any(|n| n.id == cluster.leader) {
+            anyhow::bail!(
+                "cluster `{}` leader `{}` does not reference any node in [[cluster.node]]",
+                cluster.id,
+                cluster.leader
+            );
+        }
+        // Node ids and addrs unique within a cluster, backend kind valid.
+        let mut node_ids: HashSet<&String> = HashSet::new();
+        let mut node_addrs: HashSet<&String> = HashSet::new();
+        for node in &cluster.nodes {
+            if !node_ids.insert(&node.id) {
+                anyhow::bail!(
+                    "duplicate cluster node id `{}` in cluster `{}`",
+                    node.id,
+                    cluster.id
+                );
+            }
+            if !node_addrs.insert(&node.addr) {
+                anyhow::bail!(
+                    "duplicate cluster node addr `{}` in cluster `{}`",
+                    node.addr,
+                    cluster.id
+                );
+            }
+            if !matches!(node.backend.as_str(), "cpu" | "cuda" | "metal" | "wgpu") {
+                anyhow::bail!(
+                    "unknown backend kind `{}` for cluster node `{}` (expected cpu | cuda | metal | wgpu)",
+                    node.backend,
+                    node.id
+                );
+            }
+            if !node.cert_fingerprint.starts_with("sha256:") {
+                anyhow::bail!(
+                    "cluster node `{}` cert_fingerprint must start with `sha256:`",
+                    node.id
+                );
+            }
+        }
+    }
+
+    // local-cluster providers must reference an existing cluster
+    for p in &cfg.providers {
+        if p.kind == "local-cluster" {
+            let target = p.cluster.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "provider `{}` kind=local-cluster requires a `cluster` field",
+                    p.id
+                )
+            })?;
+            if !cfg.clusters.iter().any(|c| &c.id == target) {
+                anyhow::bail!(
+                    "provider `{}` references unknown cluster `{}`",
+                    p.id,
+                    target
+                );
+            }
+        }
+    }
+
     // Pipelines: each must contain `forward` and at least one known terminal stage.
     // The set of known terminals in v1 is just `log` — when more terminals are added,
     // this list grows. Pipelines reference stage ids only; we don't validate them against
