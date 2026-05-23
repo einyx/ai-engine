@@ -13,6 +13,7 @@ ai-engine-tokenizer.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 burn = { workspace = true, features = ["std"] }
+burn-ndarray = { workspace = true }
 bytemuck.workspace = true
 bytes.workspace = true
 futures.workspace = true
