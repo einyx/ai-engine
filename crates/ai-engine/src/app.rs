@@ -158,10 +158,10 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
             // Plan 3 simplification: workers cover all layers; leader hosts none.
             let leader_layers = 0..0;
             let state = ai_engine_cluster::provider::LeaderState {
-                leader,
+                leader: Arc::new(leader),
                 model_cfg,
                 model_path: std::path::PathBuf::from(&cluster_cfg.model.weights_path),
-                tokenizer,
+                tokenizer: Arc::new(tokenizer),
                 leader_layers,
             };
             // Wire the cluster under exactly one [[provider]] entry referencing
@@ -180,7 +180,7 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
                     let provider_arc: Arc<dyn Provider> = Arc::new(
                         ai_engine_cluster::provider::ClusterProvider::new_leader_with_state(
                             p.id.clone(),
-                            Arc::new(tokio::sync::Mutex::new(state)),
+                            Arc::new(state),
                         ),
                     );
                     cluster_providers.insert(p.id.clone(), provider_arc);

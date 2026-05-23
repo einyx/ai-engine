@@ -151,17 +151,15 @@ async fn cluster_provider_chat_returns_completion_from_real_cluster() {
 
     let leader = ClusterLeader::start(&leader_id, lcfg).await.unwrap();
     let state = LeaderState {
-        leader,
+        leader: Arc::new(leader),
         model_cfg: cfg.clone(),
         model_path: model_path.clone(),
-        tokenizer,
+        tokenizer: Arc::new(tokenizer),
         leader_layers: 0..0,
     };
 
-    let provider = ClusterProvider::new_leader_with_state(
-        "test-cluster",
-        Arc::new(tokio::sync::Mutex::new(state)),
-    );
+    let provider =
+        ClusterProvider::new_leader_with_state("test-cluster", Arc::new(state));
 
     let req = ChatRequest {
         model: "toy-llama".into(),

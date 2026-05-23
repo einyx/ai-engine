@@ -3,8 +3,9 @@
 //! trait changes.
 //!
 //! Two modes:
-//! - **Leader**: holds an `Arc<Mutex<LeaderState>>` and drives the cluster
-//!   autoregressive generation loop from `chat`.
+//! - **Leader**: holds an `Arc<LeaderState>` and drives the cluster
+//!   autoregressive generation loop from `chat`. (Plan 4: no Mutex —
+//!   `ClusterLeader::generate` is `&self`, supporting concurrent requests.)
 //! - **Worker**: never receives inbound HTTP, so every Provider method
 //!   returns `ProviderError::Unsupported`. The cluster member still exposes
 //!   a Provider so that the same binary configuration shape works for both
@@ -21,7 +22,6 @@ use ai_engine_tokenizer::{HfTokenizer, Tokenizer};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::leader::ClusterLeader;
 
@@ -37,11 +37,16 @@ enum Role {
 /// Owns the `ClusterLeader` plus everything required to drive a generation
 /// request end-to-end (model config, tokenizer, weights path, leader's
 /// layer range).
+///
+/// Plan 4 Task 4: the leader is held as `Arc<ClusterLeader>` (shareable
+/// into spawned generation tasks) and the tokenizer as `Arc<HfTokenizer>`
+/// (cheap clone for the same reason). `ClusterLeader::generate` is now
+/// `&self`, so `LeaderState` itself no longer needs a `Mutex`.
 pub struct LeaderState {
-    pub leader: ClusterLeader,
+    pub leader: Arc<ClusterLeader>,
     pub model_cfg: ModelConfig,
     pub model_path: PathBuf,
-    pub tokenizer: HfTokenizer,
+    pub tokenizer: Arc<HfTokenizer>,
     pub leader_layers: std::ops::Range<usize>,
 }
 
@@ -51,14 +56,14 @@ pub struct ClusterProvider {
     /// Live cluster handle, populated for `new_leader_with_state`. The
     /// `chat` impl drives the autoregressive loop through this. `None` for
     /// worker mode and for the `stub_leader` test helper.
-    state: Option<Arc<Mutex<LeaderState>>>,
+    state: Option<Arc<LeaderState>>,
 }
 
 impl ClusterProvider {
     /// Production constructor: leader mode with live cluster state.
     pub fn new_leader_with_state(
         id: impl Into<String>,
-        state: Arc<Mutex<LeaderState>>,
+        state: Arc<LeaderState>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -146,7 +151,7 @@ impl Provider for ClusterProvider {
             seed: ctx.request_id.as_u128() as u64,
         };
 
-        let mut st = state.lock().await;
+        let st = state.as_ref();
         let prompt_ids: Vec<u32> = st
             .tokenizer
             .encode(&prompt)

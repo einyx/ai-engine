@@ -12,6 +12,7 @@ pub mod leader;
 pub mod partition;
 pub mod protocol;
 pub mod provider;
+pub mod session;
 pub mod tensor_io;
 pub mod tls;
 pub mod transport;
@@ -21,6 +22,7 @@ pub use capability::{detect_capability, BackendKind, Capability};
 pub use leader::{ClusterLeader, LeaderConfig, WorkerEndpoint};
 pub use partition::{auto_partition, manual_partition, NodeAssignment, PartitionManifest};
 pub use provider::ClusterProvider;
+pub use session::{LeaderModel, RequestSession};
 pub use tls::{
     fingerprint_sha256, generate_node_identity, load_or_generate_node_identity, NodeIdentity,
 };

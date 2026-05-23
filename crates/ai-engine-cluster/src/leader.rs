@@ -3,6 +3,7 @@ use crate::partition::{auto_partition, manual_partition, PartitionManifest};
 use crate::protocol::codec::{decode, encode};
 use crate::protocol::control::{LeaderToWorker, WorkerToLeader};
 use crate::protocol::data::{ActivationHeader, Dtype};
+use crate::session::{LeaderModel, RequestSession};
 use crate::tensor_io::{tensor_from_bytes, tensor_to_bytes};
 use crate::tls::NodeIdentity;
 use crate::transport::frame::{read_frame, write_frame};
@@ -14,14 +15,13 @@ use ai_engine_runtime::arch::ffn::SwiGluFfn;
 use ai_engine_runtime::arch::rmsnorm::RmsNorm;
 use ai_engine_runtime::arch::rope::RotaryEmbedding;
 use ai_engine_runtime::config::ModelConfig;
-use ai_engine_runtime::kv_cache::KvCacheSlot;
 use ai_engine_runtime::loader::load_range;
 use ai_engine_runtime::sample::{sample, SamplingConfig};
 use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::path::Path;
-use uuid::Uuid;
+use std::sync::Arc;
 
 /// A worker the leader should dial during startup.
 #[derive(Debug, Clone)]
@@ -49,8 +49,8 @@ pub struct LeaderConfig {
 
 /// Per-worker connection state owned by the leader after the join handshake.
 ///
-/// `control_send` / `control_recv` are kept open so Task 10 can stream
-/// `Assignment` and subsequent control frames on the same bidi stream.
+/// `control_send` / `control_recv` are kept open so subsequent control
+/// frames (e.g. `Assignment`) can be sent on the same bidi stream.
 pub struct WorkerConnection {
     pub node_id: String,
     pub conn: quinn::Connection,
@@ -59,6 +59,10 @@ pub struct WorkerConnection {
 }
 
 /// Leader after startup: workers joined, capabilities collected, manifest computed.
+///
+/// Plan 4 Task 4 made `ClusterLeader` immutable from the inference path's
+/// perspective: per-request state lives in `RequestSession`. `generate` is
+/// `&self` and multiple sessions can drive the same cluster concurrently.
 pub struct ClusterLeader {
     manifest: PartitionManifest,
     connections: Vec<WorkerConnection>,
@@ -70,10 +74,7 @@ impl ClusterLeader {
     ///
     /// Sequential per-worker dial keeps things simple — v0.2 clusters are small
     /// (≤ 8 nodes) and startup is one-shot.
-    pub async fn start(
-        identity: &NodeIdentity,
-        cfg: LeaderConfig,
-    ) -> anyhow::Result<Self> {
+    pub async fn start(identity: &NodeIdentity, cfg: LeaderConfig) -> anyhow::Result<Self> {
         let fingerprints: Vec<String> =
             cfg.workers.iter().map(|w| w.fingerprint.clone()).collect();
         let endpoint = client_endpoint(identity, &fingerprints)?;
@@ -174,172 +175,48 @@ impl ClusterLeader {
         &self.manifest
     }
 
-    /// Test-only helper: run a single prefill forward pass through the cluster
-    /// and return the last-position logits.
+    /// Build a fresh per-request session. Loads the leader's portion of the
+    /// model weights from disk (embedding, final norm, output projection,
+    /// and the leader's own layer range), clones the worker
+    /// `quinn::Connection`s, and allocates per-block KV caches.
     ///
-    /// Flow:
-    ///   embedding(ids) → leader_blocks → for each worker (open_uni →
-    ///   send (header,payload) → accept_uni → read (header,payload)) →
-    ///   final_norm + output_projection → slice last position.
-    ///
-    /// The leader's own weights (embedding, final_norm, output, and its layer
-    /// range) are loaded from disk at call time. Production code in Plan 3
-    /// loads once at startup.
-    pub async fn full_forward_for_test<B>(
-        &mut self,
+    /// The returned session can be driven through `step_through_cluster_session`
+    /// to run prefill + token-by-token generation. Multiple sessions can
+    /// coexist on the same `ClusterLeader`.
+    pub async fn build_session<B>(
+        &self,
         model_path: &Path,
         cfg: &ModelConfig,
         leader_layers: Range<usize>,
-        token_ids: &[i32],
-    ) -> anyhow::Result<Vec<f32>>
+    ) -> anyhow::Result<RequestSession<B>>
     where
         B: Backend,
         B::Device: Default,
     {
+        let leader_model = build_leader_model::<B>(model_path, cfg, leader_layers)?;
+        let worker_conns: Vec<quinn::Connection> =
+            self.connections.iter().map(|wc| wc.conn.clone()).collect();
         let device = B::Device::default();
-        let weights = load_range::<B>(
-            model_path,
-            cfg,
-            leader_layers.clone(),
-            true,
-            true,
+        Ok(RequestSession::new(
+            Arc::new(leader_model),
+            worker_conns,
             &device,
-        )?;
-
-        let embed_tensor = weights
-            .embedding
-            .ok_or_else(|| anyhow::anyhow!("embedding required for leader"))?;
-        let embedding = TokenEmbedding::new(embed_tensor.clone());
-        let final_norm = RmsNorm::new(
-            weights
-                .final_norm
-                .ok_or_else(|| anyhow::anyhow!("final_norm required for leader"))?,
-            cfg.rms_norm_eps,
-        );
-        // tied case: output projection = embedding^T
-        let output_weight = if cfg.tie_word_embeddings {
-            embed_tensor.swap_dims(0, 1)
-        } else {
-            weights
-                .output_proj
-                .ok_or_else(|| anyhow::anyhow!("untied output projection missing"))?
-                .swap_dims(0, 1)
-        };
-        let output = OutputProjection::new(output_weight);
-
-        // Build leader's blocks.
-        let mut leader_blocks: Vec<DecoderBlock<B>> =
-            Vec::with_capacity(leader_layers.len());
-        for layer in weights.layers {
-            let attn_norm = RmsNorm::new(layer.attn_norm, cfg.rms_norm_eps);
-            let ffn_norm = RmsNorm::new(layer.ffn_norm, cfg.rms_norm_eps);
-            let rope = RotaryEmbedding::new(
-                cfg.head_dim,
-                cfg.max_position_embeddings,
-                cfg.rope_theta,
-                &device,
-            );
-            let attn = Attention::new(
-                layer.q_proj.swap_dims(0, 1),
-                layer.k_proj.swap_dims(0, 1),
-                layer.v_proj.swap_dims(0, 1),
-                layer.o_proj.swap_dims(0, 1),
-                rope,
-                cfg.n_heads,
-                cfg.n_kv_heads,
-                cfg.head_dim,
-            );
-            let ffn = SwiGluFfn::new(
-                layer.ffn_gate.swap_dims(0, 1),
-                layer.ffn_up.swap_dims(0, 1),
-                layer.ffn_down.swap_dims(0, 1),
-            );
-            leader_blocks.push(DecoderBlock {
-                attn_norm,
-                attn,
-                ffn_norm,
-                ffn,
-            });
-        }
-
-        // Forward through leader's blocks with fresh per-block KV caches.
-        let seq = token_ids.len();
-        let ids = Tensor::<B, 2, Int>::from_data(
-            TensorData::new(token_ids.to_vec(), [1, seq]),
-            &device,
-        );
-        let mut x = embedding.forward(ids);
-        let positions: Vec<i32> = (0..seq as i32).collect();
-        let mut leader_caches: Vec<KvCacheSlot<B>> = (0..leader_blocks.len())
-            .map(|_| {
-                KvCacheSlot::<B>::new(
-                    1,
-                    cfg.n_kv_heads,
-                    cfg.max_position_embeddings,
-                    cfg.head_dim,
-                    &device,
-                )
-            })
-            .collect();
-        for (block, cache) in leader_blocks.iter().zip(leader_caches.iter_mut()) {
-            x = block.forward(x, &positions, cache);
-        }
-
-        // Relay through each worker in order. One uni stream out + one uni
-        // stream in per worker per request.
-        let request_id = Uuid::now_v7();
-        for wc in &self.connections {
-            let (bytes, shape) = tensor_to_bytes(x)?;
-            let header = ActivationHeader {
-                request_id,
-                seq_pos: 0,
-                shape: [shape[0] as u32, shape[1] as u32, shape[2] as u32],
-                dtype: Dtype::F32,
-                is_terminal: true, // single-shot prefill in this test
-            };
-            let mut send_uni = wc.conn.open_uni().await?;
-            write_frame(&mut send_uni, &encode(&header)?).await?;
-            write_frame(&mut send_uni, &bytes).await?;
-            send_uni.finish()?;
-
-            let mut recv_uni = wc.conn.accept_uni().await?;
-            let header_back: ActivationHeader =
-                decode(&read_frame(&mut recv_uni).await?)?;
-            let payload_back = read_frame(&mut recv_uni).await?;
-            let shape_back = [
-                header_back.shape[0] as usize,
-                header_back.shape[1] as usize,
-                header_back.shape[2] as usize,
-            ];
-            x = tensor_from_bytes::<B>(&payload_back, shape_back, &device)?;
-        }
-
-        // Final norm + output projection.
-        let x = final_norm.forward(x);
-        let logits = output.forward(x);
-
-        let last = logits
-            .slice([0..1, (seq - 1)..seq, 0..cfg.vocab_size])
-            .reshape([cfg.vocab_size]);
-        last.to_data()
-            .to_vec()
-            .map_err(|e| anyhow::anyhow!("to_vec: {e:?}"))
+        ))
     }
 
     /// Autoregressive greedy/sampled generation through the cluster.
     /// Returns the generated token ids (not including the prompt).
     ///
     /// Flow:
-    ///   1. Load embedding + final_norm + tied/untied output proj + leader's
-    ///      layer range from disk.
-    ///   2. Build leader's DecoderBlocks and allocate per-block KV caches.
-    ///   3. Prefill: feed the prompt through embedding → leader blocks →
+    ///   1. Build a `RequestSession` (loads leader-side weights, allocates
+    ///      KV caches, clones worker connections, mints a fresh `request_id`).
+    ///   2. Prefill: feed the prompt through embedding → leader blocks →
     ///      every worker → final_norm + output proj → sample first token.
-    ///   4. Token loop: embed single token at `current_pos`, run leader blocks
+    ///   3. Token loop: embed single token at `current_pos`, run leader blocks
     ///      (advancing KV by one position), send 1-token activations to each
     ///      worker, receive back, final_norm + output, sample next.
     pub async fn generate<B>(
-        &mut self,
+        &self,
         model_path: &Path,
         cfg: &ModelConfig,
         leader_layers: Range<usize>,
@@ -351,125 +228,24 @@ impl ClusterLeader {
         B: Backend,
         B::Device: Default,
     {
-        let device = B::Device::default();
-        let weights = load_range::<B>(
-            model_path,
-            cfg,
-            leader_layers.clone(),
-            true,
-            true,
-            &device,
-        )?;
+        let mut session: RequestSession<B> = self
+            .build_session(model_path, cfg, leader_layers)
+            .await?;
 
-        let embed_tensor = weights
-            .embedding
-            .ok_or_else(|| anyhow::anyhow!("embedding required for leader"))?;
-        let embedding = TokenEmbedding::new(embed_tensor.clone());
-        let final_norm = RmsNorm::new(
-            weights
-                .final_norm
-                .ok_or_else(|| anyhow::anyhow!("final_norm required for leader"))?,
-            cfg.rms_norm_eps,
-        );
-        let output_weight = if cfg.tie_word_embeddings {
-            embed_tensor.swap_dims(0, 1)
-        } else {
-            weights
-                .output_proj
-                .ok_or_else(|| anyhow::anyhow!("untied output projection missing"))?
-                .swap_dims(0, 1)
-        };
-        let output = OutputProjection::new(output_weight);
-
-        let mut leader_blocks: Vec<DecoderBlock<B>> =
-            Vec::with_capacity(leader_layers.len());
-        for layer in weights.layers {
-            let attn_norm = RmsNorm::new(layer.attn_norm, cfg.rms_norm_eps);
-            let ffn_norm = RmsNorm::new(layer.ffn_norm, cfg.rms_norm_eps);
-            let rope = RotaryEmbedding::new(
-                cfg.head_dim,
-                cfg.max_position_embeddings,
-                cfg.rope_theta,
-                &device,
-            );
-            let attn = Attention::new(
-                layer.q_proj.swap_dims(0, 1),
-                layer.k_proj.swap_dims(0, 1),
-                layer.v_proj.swap_dims(0, 1),
-                layer.o_proj.swap_dims(0, 1),
-                rope,
-                cfg.n_heads,
-                cfg.n_kv_heads,
-                cfg.head_dim,
-            );
-            let ffn = SwiGluFfn::new(
-                layer.ffn_gate.swap_dims(0, 1),
-                layer.ffn_up.swap_dims(0, 1),
-                layer.ffn_down.swap_dims(0, 1),
-            );
-            leader_blocks.push(DecoderBlock {
-                attn_norm,
-                attn,
-                ffn_norm,
-                ffn,
-            });
-        }
-
-        // Per-block KV caches on the leader (workers maintain their own
-        // keyed by request_id).
-        let mut leader_caches: Vec<KvCacheSlot<B>> = (0..leader_blocks.len())
-            .map(|_| {
-                KvCacheSlot::<B>::new(
-                    1,
-                    cfg.n_kv_heads,
-                    cfg.max_position_embeddings,
-                    cfg.head_dim,
-                    &device,
-                )
-            })
-            .collect();
-
-        let request_id = Uuid::now_v7();
         let mut produced: Vec<u32> = Vec::with_capacity(max_tokens);
 
         // Prefill.
-        let last_logits = step_through_cluster::<B>(
-            &mut self.connections,
-            &leader_blocks,
-            &mut leader_caches,
-            &embedding,
-            &final_norm,
-            &output,
-            cfg,
-            request_id,
-            prompt_ids,
-            0,
-            false,
-            &device,
-        )
-        .await?;
-        let mut current_pos = prompt_ids.len();
+        let last_logits =
+            step_through_cluster_session(&mut session, prompt_ids, false).await?;
+        session.current_pos = prompt_ids.len();
         produced.push(sample(&last_logits, &sampling));
 
         // Token loop.
         for _ in 1..max_tokens {
             let last_token = *produced.last().unwrap() as i32;
-            let last_logits = step_through_cluster::<B>(
-                &mut self.connections,
-                &leader_blocks,
-                &mut leader_caches,
-                &embedding,
-                &final_norm,
-                &output,
-                cfg,
-                request_id,
-                &[last_token],
-                current_pos,
-                false,
-                &device,
-            )
-            .await?;
-            current_pos += 1;
+            let last_logits =
+                step_through_cluster_session(&mut session, &[last_token], false).await?;
+            session.current_pos += 1;
             produced.push(sample(&last_logits, &sampling));
         }
 
@@ -480,43 +256,126 @@ impl ClusterLeader {
     }
 }
 
-/// Run ONE forward step through (leader_blocks → all workers → final_norm →
-/// output). Used for both prefill (seq = prompt_len) and generation (seq = 1).
+/// Load the leader-side model artifacts (embedding, final_norm, output proj,
+/// and the leader's own decoder blocks) from disk for backend `B`.
 ///
-/// Hoisted out of `ClusterLeader::generate` so the borrow checker doesn't
-/// have to reason about `&mut self` captured by an inner async fn.
-#[allow(clippy::too_many_arguments)]
-async fn step_through_cluster<B>(
-    connections: &mut [WorkerConnection],
-    leader_blocks: &[DecoderBlock<B>],
-    leader_caches: &mut [KvCacheSlot<B>],
-    embedding: &TokenEmbedding<B>,
-    final_norm: &RmsNorm<B>,
-    output: &OutputProjection<B>,
+/// Hoisted out of `ClusterLeader` so that `LeaderModel<B>` can be generic
+/// over the backend without forcing `ClusterLeader` itself to be generic.
+fn build_leader_model<B>(
+    model_path: &Path,
     cfg: &ModelConfig,
-    request_id: Uuid,
+    leader_layers: Range<usize>,
+) -> anyhow::Result<LeaderModel<B>>
+where
+    B: Backend,
+    B::Device: Default,
+{
+    let device = B::Device::default();
+    let weights = load_range::<B>(model_path, cfg, leader_layers.clone(), true, true, &device)?;
+
+    let embed_tensor = weights
+        .embedding
+        .ok_or_else(|| anyhow::anyhow!("embedding required for leader"))?;
+    let embedding = TokenEmbedding::new(embed_tensor.clone());
+    let final_norm = RmsNorm::new(
+        weights
+            .final_norm
+            .ok_or_else(|| anyhow::anyhow!("final_norm required for leader"))?,
+        cfg.rms_norm_eps,
+    );
+    let output_weight = if cfg.tie_word_embeddings {
+        embed_tensor.swap_dims(0, 1)
+    } else {
+        weights
+            .output_proj
+            .ok_or_else(|| anyhow::anyhow!("untied output projection missing"))?
+            .swap_dims(0, 1)
+    };
+    let output = OutputProjection::new(output_weight);
+
+    let mut blocks: Vec<DecoderBlock<B>> = Vec::with_capacity(leader_layers.len());
+    for layer in weights.layers {
+        let attn_norm = RmsNorm::new(layer.attn_norm, cfg.rms_norm_eps);
+        let ffn_norm = RmsNorm::new(layer.ffn_norm, cfg.rms_norm_eps);
+        let rope = RotaryEmbedding::new(
+            cfg.head_dim,
+            cfg.max_position_embeddings,
+            cfg.rope_theta,
+            &device,
+        );
+        let attn = Attention::new(
+            layer.q_proj.swap_dims(0, 1),
+            layer.k_proj.swap_dims(0, 1),
+            layer.v_proj.swap_dims(0, 1),
+            layer.o_proj.swap_dims(0, 1),
+            rope,
+            cfg.n_heads,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+        );
+        let ffn = SwiGluFfn::new(
+            layer.ffn_gate.swap_dims(0, 1),
+            layer.ffn_up.swap_dims(0, 1),
+            layer.ffn_down.swap_dims(0, 1),
+        );
+        blocks.push(DecoderBlock {
+            attn_norm,
+            attn,
+            ffn_norm,
+            ffn,
+        });
+    }
+
+    Ok(LeaderModel {
+        embedding,
+        blocks,
+        final_norm,
+        output,
+        cfg: cfg.clone(),
+    })
+}
+
+/// Run ONE forward step against the current `RequestSession`. Used for both
+/// prefill (seq = prompt_len) and per-token generation (seq = 1).
+///
+/// Mutates `session.leader_caches` (KV state advances), but does not bump
+/// `session.current_pos` — the caller does that after sampling.
+pub async fn step_through_cluster_session<B>(
+    session: &mut RequestSession<B>,
     token_ids: &[i32],
-    start_pos: usize,
     is_terminal: bool,
-    device: &B::Device,
 ) -> anyhow::Result<Vec<f32>>
 where
     B: Backend,
+    B::Device: Default,
 {
+    let device = B::Device::default();
+    let cfg = &session.model.cfg;
     let seq = token_ids.len();
     let ids = Tensor::<B, 2, Int>::from_data(
         TensorData::new(token_ids.to_vec(), [1, seq]),
-        device,
+        &device,
     );
-    let mut x = embedding.forward(ids);
-    let positions: Vec<i32> =
-        ((start_pos as i32)..((start_pos + seq) as i32)).collect();
-    for (block, cache) in leader_blocks.iter().zip(leader_caches.iter_mut()) {
+    let mut x = session.model.embedding.forward(ids);
+    let positions: Vec<i32> = ((session.current_pos as i32)
+        ..((session.current_pos + seq) as i32))
+        .collect();
+    for (block, cache) in session
+        .model
+        .blocks
+        .iter()
+        .zip(session.leader_caches.iter_mut())
+    {
         x = block.forward(x, &positions, cache);
     }
 
     // Send through each worker in order, waiting for response between hops.
-    for wc in connections.iter() {
+    // Each request opens its own bidi stream pair per hop (Task 5 will switch
+    // the worker side to accept_bi); for now this still uses uni streams
+    // matching the existing worker loop.
+    let request_id = session.request_id;
+    let start_pos = session.current_pos;
+    for conn in &session.worker_conns {
         let (bytes, shape) = tensor_to_bytes(x)?;
         let header = ActivationHeader {
             request_id,
@@ -525,21 +384,21 @@ where
             dtype: Dtype::F32,
             is_terminal,
         };
-        let mut send_uni = wc.conn.open_uni().await?;
+        let mut send_uni = conn.open_uni().await?;
         write_frame(&mut send_uni, &encode(&header)?).await?;
         write_frame(&mut send_uni, &bytes).await?;
         send_uni.finish()?;
 
-        let mut recv_uni = wc.conn.accept_uni().await?;
+        let mut recv_uni = conn.accept_uni().await?;
         let _hdr: ActivationHeader = decode(&read_frame(&mut recv_uni).await?)?;
         let payload = read_frame(&mut recv_uni).await?;
         let shape_back = [shape[0], shape[1], shape[2]];
-        x = tensor_from_bytes::<B>(&payload, shape_back, device)?;
+        x = tensor_from_bytes::<B>(&payload, shape_back, &device)?;
     }
 
     // Final norm + output projection. Slice last position.
-    let x = final_norm.forward(x);
-    let logits = output.forward(x);
+    let x = session.model.final_norm.forward(x);
+    let logits = session.model.output.forward(x);
     let last = logits
         .slice([0..1, (seq - 1)..seq, 0..cfg.vocab_size])
         .reshape([cfg.vocab_size]);

@@ -104,7 +104,7 @@ async fn worker_failure_mid_request_returns_error_to_leader() {
         partition_override: Some(vec![("w1".into(), 0..2), ("w2".into(), 2..4)]),
     };
 
-    let mut leader = ClusterLeader::start(&leader_id, lcfg).await.unwrap();
+    let leader = ClusterLeader::start(&leader_id, lcfg).await.unwrap();
 
     // Kill w1 *before* the forward starts. On the toy model a full forward
     // completes in well under 100ms, so racing a kill against an in-flight
@@ -124,7 +124,19 @@ async fn worker_failure_mid_request_returns_error_to_leader() {
     let model_path_for_fw = model_path.clone();
     let leader_task = tokio::spawn(async move {
         leader
-            .full_forward_for_test::<B>(&model_path_for_fw, &cfg_for_fw, 0..0, &ids_i32)
+            .generate::<B>(
+                &model_path_for_fw,
+                &cfg_for_fw,
+                0..0,
+                &ids_i32,
+                1,
+                ai_engine_runtime::sample::SamplingConfig {
+                    temperature: 0.0,
+                    top_p: None,
+                    top_k: None,
+                    seed: 0,
+                },
+            )
             .await
     });
 
