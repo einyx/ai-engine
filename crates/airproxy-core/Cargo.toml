@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 airproxy-provider.workspace = true
+anyhow.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

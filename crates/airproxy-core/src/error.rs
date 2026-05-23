@@ -14,7 +14,7 @@ pub enum GatewayError {
     #[error(transparent)]
     Provider(#[from] ProviderError),
     #[error("internal: {0}")]
-    Internal(String),
+    Internal(#[from] anyhow::Error),
 }
 
 impl GatewayError {
