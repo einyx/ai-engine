@@ -7,6 +7,7 @@ pub mod capability;
 pub mod leader;
 pub mod partition;
 pub mod protocol;
+pub mod provider;
 pub mod tensor_io;
 pub mod tls;
 pub mod transport;
