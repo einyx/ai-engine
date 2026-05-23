@@ -3,6 +3,8 @@
 //! Distributed inference coordinator. Implements `Provider` from
 //! `ai_engine_provider` against a cluster of nodes running QUIC.
 
+pub mod tls;
+
 #[cfg(test)]
 mod smoke_compile_test {
     #[test]
