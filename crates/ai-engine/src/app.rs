@@ -76,7 +76,10 @@ pub fn resolve_role(cfg: &Config, node_id: &str) -> NodeRole {
 /// In cluster deployments, this also resolves the node's role: workers return
 /// a stripped `AppState` (no pipelines, no providers — they only run a QUIC
 /// listener via a separate worker entrypoint and respond to `/healthz`).
-pub fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<AppState>> {
+///
+/// Async because leader-mode startup needs to await `ClusterLeader::start`
+/// (QUIC join handshake against every worker).
+pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<AppState>> {
     let role = resolve_role(cfg, node_id);
     if let NodeRole::Worker { .. } = &role {
         // Worker mode: no HTTP pipelines, just health endpoints.
@@ -87,16 +90,130 @@ pub fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<AppSta
         }));
     }
 
-    if let NodeRole::Leader { .. } = &role {
-        // Leader: pipeline construction (real cluster startup wired in Task 7).
-        todo!("leader-mode build_app_state requires async ClusterLeader::start; wired in Task 7")
+    // Leader & Gateway share the same construction; the difference is which
+    // [[provider]] entries we expand into ClusterProvider (leader only).
+    let leader_cluster_ids: Vec<String> = match &role {
+        NodeRole::Leader { cluster_ids } => cluster_ids.clone(),
+        _ => Vec::new(),
+    };
+
+    // Pre-build cluster providers (async — kicks off the QUIC join handshake
+    // against every worker in each cluster this node leads).
+    let mut cluster_providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+    if !leader_cluster_ids.is_empty() {
+        let identity = load_or_generate_node_identity(node_id)?;
+        for cluster_id in &leader_cluster_ids {
+            let cluster_cfg = cfg
+                .clusters
+                .iter()
+                .find(|c| &c.id == cluster_id)
+                .expect("resolve_role guarantees the cluster exists");
+
+            let worker_endpoints: Vec<ai_engine_cluster::leader::WorkerEndpoint> = cluster_cfg
+                .nodes
+                .iter()
+                .filter(|n| n.id != cluster_cfg.leader)
+                .map(|n| {
+                    let addr = n
+                        .addr
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("cluster `{}` node `{}` addr `{}` invalid: {e}", cluster_id, n.id, n.addr));
+                    addr.map(|addr| ai_engine_cluster::leader::WorkerEndpoint {
+                        node_id: n.id.clone(),
+                        addr,
+                        fingerprint: n.cert_fingerprint.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let model_cfg = ai_engine_runtime::config::ModelConfig::from_file(
+                std::path::Path::new(&cluster_cfg.model.config_path),
+            )?;
+            let n_layers = model_cfg.n_layers;
+            let lcfg = ai_engine_cluster::leader::LeaderConfig {
+                cluster_id: cluster_id.clone(),
+                leader_node_id: cluster_cfg.leader.clone(),
+                model_id: cluster_cfg.model.id.clone(),
+                n_layers,
+                // Approximate sizing; refined in v0.3 with real model metadata.
+                layer_bytes: 256 * 1024,
+                embed_output_bytes: 256 * 1024,
+                per_node_overhead: 64 * 1024,
+                workers: worker_endpoints,
+            };
+            let leader = ai_engine_cluster::leader::ClusterLeader::start(&identity, lcfg).await?;
+            let tokenizer =
+                ai_engine_tokenizer::HfTokenizer::from_path(&cluster_cfg.model.tokenizer_path)?;
+            // Plan 3 simplification: workers cover all layers; leader hosts none.
+            let leader_layers = 0..0;
+            let state = ai_engine_cluster::provider::LeaderState {
+                leader,
+                model_cfg,
+                model_path: std::path::PathBuf::from(&cluster_cfg.model.weights_path),
+                tokenizer,
+                leader_layers,
+            };
+            // Wire the cluster under exactly one [[provider]] entry referencing
+            // it. Multiple providers pointing at the same cluster aren't
+            // supported in v0.2 (would require sharing the live `ClusterLeader`
+            // — that's Plan 4+).
+            let matching: Vec<&ai_engine_config::Provider> = cfg
+                .providers
+                .iter()
+                .filter(|p| {
+                    p.kind == "local-cluster" && p.cluster.as_deref() == Some(cluster_id)
+                })
+                .collect();
+            match matching.as_slice() {
+                [p] => {
+                    let provider_arc: Arc<dyn Provider> = Arc::new(
+                        ai_engine_cluster::provider::ClusterProvider::new_leader_with_state(
+                            p.id.clone(),
+                            Arc::new(tokio::sync::Mutex::new(state)),
+                        ),
+                    );
+                    cluster_providers.insert(p.id.clone(), provider_arc);
+                }
+                [] => anyhow::bail!(
+                    "cluster `{}` has no [[provider]] referencing it", cluster_id
+                ),
+                _ => anyhow::bail!(
+                    "cluster `{}` is referenced by {} providers; v0.2 supports at most one",
+                    cluster_id,
+                    matching.len()
+                ),
+            }
+        }
     }
 
-    build_gateway_app_state(cfg)
+    build_gateway_app_state(cfg, cluster_providers)
 }
 
-/// Construct the gateway-only AppState (no cluster providers).
-fn build_gateway_app_state(cfg: &Config) -> anyhow::Result<Arc<AppState>> {
+/// Load this node's TLS identity from disk, or generate fresh.
+///
+/// Plan 3 simplification: we always (re)generate on startup so the file's
+/// only purpose is observability/debugging. Persistence + matching fingerprint
+/// updates land in v0.3.
+fn load_or_generate_node_identity(
+    node_id: &str,
+) -> anyhow::Result<ai_engine_cluster::tls::NodeIdentity> {
+    let dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".ai-engine");
+    let id = ai_engine_cluster::tls::generate_node_identity(node_id)?;
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("node.crt"), &id.cert_pem);
+    let _ = std::fs::write(dir.join("node.key"), &id.key_pem);
+    Ok(id)
+}
+
+/// Construct the gateway-only AppState. `cluster_providers` are pre-built
+/// providers (leader-mode) keyed by their [[provider]] id; they shadow any
+/// `kind = "local-cluster"` entry in `cfg.providers`.
+fn build_gateway_app_state(
+    cfg: &Config,
+    cluster_providers: HashMap<String, Arc<dyn Provider>>,
+) -> anyhow::Result<Arc<AppState>> {
     // --- providers ---
     let mut providers = ProviderRegistry::new();
     for p in &cfg.providers {
@@ -121,6 +238,19 @@ fn build_gateway_app_state(cfg: &Config) -> anyhow::Result<Arc<AppState>> {
                 p.base_url.clone(),
                 p.timeout_secs,
             )),
+            "local-cluster" => {
+                // Leader: provider was pre-constructed above. Worker/Gateway
+                // for an unrelated cluster: fall back to a worker stub that
+                // returns Unsupported on every call (the [[route]] for it is
+                // unreachable on this node).
+                if let Some(arc) = cluster_providers.get(&p.id) {
+                    arc.clone()
+                } else {
+                    Arc::new(ai_engine_cluster::provider::ClusterProvider::new_worker(
+                        p.id.clone(),
+                    ))
+                }
+            }
             other => anyhow::bail!(
                 "unknown provider kind `{other}` (validated upstream — this is a bug)"
             ),

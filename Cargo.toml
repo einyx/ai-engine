@@ -63,3 +63,4 @@ postcard = { version = "1", default-features = false, features = ["use-std"] }
 sha2 = "0.10"
 sysinfo = "0.32"
 ai-engine-cluster = { path = "crates/ai-engine-cluster" }
+dirs = "5"

@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let state = ai_engine::app::build_app_state(&cfg, "localhost")?;
+    let state = ai_engine::app::build_app_state(&cfg, "localhost").await?;
     let listener = tokio::net::TcpListener::bind(&cfg.server.bind).await?;
     let actual = listener.local_addr().ok();
     tracing::info!(bind = ?actual, "ai-engine listening");
