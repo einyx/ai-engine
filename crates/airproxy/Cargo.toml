@@ -1,0 +1,12 @@
+[package]
+name = "airproxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "airproxy"
+path = "src/main.rs"
+
+[dependencies]
