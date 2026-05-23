@@ -2,4 +2,6 @@
 **/*.rs.bk
 .DS_Store
 *.tmp
+
+# Python fixture-generation venv (not a runtime dep)
 .venv-fixture/
