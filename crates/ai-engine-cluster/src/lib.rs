@@ -7,6 +7,7 @@ pub mod capability;
 pub mod partition;
 pub mod protocol;
 pub mod tls;
+pub mod transport;
 
 #[cfg(test)]
 mod smoke_compile_test {
