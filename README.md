@@ -178,6 +178,30 @@ Supported model families (safetensors layout):
 Backends compiled by default: CPU (ndarray) and WebGPU (covers Metal on macOS,
 Vulkan on Linux). CUDA available behind the `backend-cuda` feature.
 
+## Distributed inference (v0.2-alpha.2 preview)
+
+ai-engine v0.2-alpha.2 adds the `ai-engine-cluster` crate: a leader/worker
+QUIC-based pipeline-parallel inference coordinator. A 3-node loopback test
+in `crates/ai-engine-cluster/tests/inprocess_cluster.rs` verifies that the
+cluster path produces logits matching the single-node baseline to within
+1e-3 on the toy-llama-3 fixture.
+
+The cluster is not yet wired into the binary or the TOML config — that's
+Plan 3 (final v0.2.0 release).
+
+Components:
+- `ai-engine-cluster::tls` — self-signed ed25519 cert generation + SHA-256
+  fingerprint pinning.
+- `ai-engine-cluster::transport` — QUIC over rustls with ALPN
+  `ai-engine-cluster/1`.
+- `ai-engine-cluster::protocol` — control plane (postcard-framed) and
+  data plane (length-prefixed activation frames) over QUIC streams.
+- `ai-engine-cluster::partition` — capability-aware DP layer-cut solver
+  with manual override and content-addressed manifests.
+- `ai-engine-cluster::worker` / `::leader` — state machines.
+- `ai-engine-cluster::provider` — implements the existing `Provider`
+  trait so the gateway pipeline routes to the cluster without changes.
+
 ## License
 
 Apache-2.0.

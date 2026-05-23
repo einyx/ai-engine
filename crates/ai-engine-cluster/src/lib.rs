@@ -1,7 +1,11 @@
 //! ai-engine-cluster
 //!
-//! Distributed inference coordinator. Implements `Provider` from
-//! `ai_engine_provider` against a cluster of nodes running QUIC.
+//! Distributed inference coordinator. See
+//! `docs/superpowers/specs/2026-05-23-ai-engine-distributed-inference-design.md`
+//! for the design.
+//!
+//! Implements `Provider` from `ai_engine_provider` against a cluster of
+//! nodes communicating over QUIC.
 
 pub mod capability;
 pub mod leader;
@@ -12,6 +16,12 @@ pub mod tensor_io;
 pub mod tls;
 pub mod transport;
 pub mod worker;
+
+pub use capability::{detect_capability, BackendKind, Capability};
+pub use leader::{ClusterLeader, LeaderConfig, WorkerEndpoint};
+pub use partition::{auto_partition, manual_partition, NodeAssignment, PartitionManifest};
+pub use provider::ClusterProvider;
+pub use tls::{fingerprint_sha256, generate_node_identity, NodeIdentity};
 
 #[cfg(test)]
 mod smoke_compile_test {
