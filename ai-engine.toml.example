@@ -89,3 +89,46 @@ stages = ["auth", "content_policy", "model_route", "forward", "log"]
 
 [pipeline."/v1/embeddings"]
 stages = ["auth", "model_route", "forward", "log"]
+
+# --- Distributed inference cluster (uncomment to enable) ---
+#
+# A cluster of nodes runs pipeline-parallel inference. The leader speaks HTTP;
+# workers only speak QUIC inbound. Every node lists every node here — config
+# is symmetric across the cluster. Run `ai-engine node fingerprint` on each
+# node to get its sha256:... fingerprint, then paste into cert_fingerprint.
+#
+# [[cluster]]
+# id = "home-lab"
+# leader = "node-a"
+# quic_bind = "0.0.0.0:7700"
+# protocol_version = 1
+# join_timeout_secs = 30
+# heartbeat_interval_secs = 5
+#
+# [cluster.model]
+# id = "llama-3-70b"
+# config_path = "/srv/models/llama-3-70b/config.json"
+# weights_path = "/srv/models/llama-3-70b"
+# tokenizer_path = "/srv/models/llama-3-70b/tokenizer.json"
+#
+# [[cluster.node]]
+# id = "node-a"
+# addr = "192.168.1.10:7700"
+# cert_fingerprint = "sha256:REPLACE_WITH_NODE_A_FINGERPRINT"
+# backend = "cuda"
+# device_index = 0
+#
+# [[cluster.node]]
+# id = "node-b"
+# addr = "192.168.1.11:7700"
+# cert_fingerprint = "sha256:REPLACE_WITH_NODE_B_FINGERPRINT"
+# backend = "metal"
+#
+# [[provider]]
+# id = "home-cluster"
+# kind = "local-cluster"
+# cluster = "home-lab"
+#
+# [[route]]
+# match = { model = "llama-3-70b" }
+# provider = "home-cluster"
