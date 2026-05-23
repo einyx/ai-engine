@@ -155,6 +155,29 @@ edits to the pipeline machinery:
 - **#7** — RAG / knowledge base over Qdrant.
 - **#8** — Admin REST API, Helm chart, container, migrations CLI.
 
+## Single-node inference (v0.2-alpha preview)
+
+ai-engine v0.2-alpha can load a Llama-3-family safetensors checkpoint
+and run inference directly — no cluster yet. See the test fixture at
+`crates/ai-engine-runtime/fixtures/toy-llama-3/` for the canonical example,
+and the bytes-tolerant correctness gate in
+`crates/ai-engine-runtime/tests/reference_logits.rs` that verifies the
+burn-based forward pass matches HF transformers to within 1e-3.
+
+This is preview functionality; the full v0.2.0 release requires the cluster
+configuration described in
+`docs/superpowers/specs/2026-05-23-ai-engine-distributed-inference-design.md`.
+Plan 2 in `docs/superpowers/plans/` will cover the distributed pieces.
+
+Supported model families (safetensors layout):
+- Llama 3.x
+- Mistral 7B / Mistral Nemo
+- Qwen 2.5
+- DeepSeek V2 (dense portions only — no MoE in v0.2)
+
+Backends compiled by default: CPU (ndarray) and WebGPU (covers Metal on macOS,
+Vulkan on Linux). CUDA available behind the `backend-cuda` feature.
+
 ## License
 
 Apache-2.0.
