@@ -5,8 +5,27 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "airproxy"
+path = "src/lib.rs"
+
 [[bin]]
 name = "airproxy"
 path = "src/main.rs"
 
 [dependencies]
+airproxy-anthropic.workspace = true
+airproxy-config.workspace = true
+airproxy-core.workspace = true
+airproxy-http.workspace = true
+airproxy-openai.workspace = true
+airproxy-provider.workspace = true
+airproxy-stages.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+clap.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
