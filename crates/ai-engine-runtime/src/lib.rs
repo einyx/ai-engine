@@ -9,6 +9,7 @@ pub mod config;
 pub mod kv_cache;
 pub mod loader;
 pub mod name_map;
+pub mod request;
 pub mod sample;
 
 pub use arch::model::Model;
@@ -16,4 +17,5 @@ pub use backend::BackendKind;
 pub use config::{ModelConfig, ModelFamily};
 pub use kv_cache::KvCacheSlot;
 pub use loader::{load_range, LoadedWeights};
+pub use request::RequestState;
 pub use sample::{sample, SamplingConfig};
