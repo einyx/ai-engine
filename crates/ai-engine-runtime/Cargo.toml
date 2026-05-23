@@ -25,6 +25,7 @@ memmap2.workspace = true
 safetensors.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
+rand.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

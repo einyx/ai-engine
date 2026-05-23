@@ -55,3 +55,4 @@ safetensors = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 half = "2"
 memmap2 = "0.9"
+rand = "0.8"
