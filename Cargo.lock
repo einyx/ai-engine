@@ -109,6 +109,7 @@ dependencies = [
  "ai-engine-runtime",
  "ai-engine-tokenizer",
  "anyhow",
+ "async-stream",
  "async-trait",
  "burn",
  "burn-ndarray",

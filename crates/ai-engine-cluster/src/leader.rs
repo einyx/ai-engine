@@ -22,6 +22,7 @@ use std::net::SocketAddr;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// A worker the leader should dial during startup.
 #[derive(Debug, Clone)]
@@ -253,6 +254,95 @@ impl ClusterLeader {
         // at the end of the test (or request lifetime), workers exit
         // their accept loop gracefully via EOF and free their caches.
         Ok(produced)
+    }
+
+    /// Spawn a background task that drives prefill + token-by-token generation
+    /// and emits each sampled token id over an mpsc channel as soon as it's
+    /// available. Returns the receiver immediately so callers can stream out
+    /// tokens (e.g. as SSE chunks) without waiting for the whole sequence.
+    ///
+    /// The spawned task owns its `RequestSession`; the only thing it shares
+    /// with other concurrent requests is the underlying `Arc<ClusterLeader>`
+    /// (worker connections + manifest, all immutable from the request path
+    /// post-Task 4).
+    ///
+    /// On any error during generation, an `Err` item is sent on the channel
+    /// and the task exits — the receiver sees the error then the stream ends.
+    /// Capacity 64 keeps the producer from racing far ahead of the consumer
+    /// without stalling fast single-token consumers.
+    pub fn generate_stream<B>(
+        self: Arc<Self>,
+        model_path: &Path,
+        cfg: &ModelConfig,
+        leader_layers: Range<usize>,
+        prompt_ids: &[i32],
+        max_tokens: usize,
+        sampling: SamplingConfig,
+    ) -> mpsc::Receiver<anyhow::Result<u32>>
+    where
+        B: Backend,
+        B::Device: Default,
+    {
+        let (tx, rx) = mpsc::channel::<anyhow::Result<u32>>(64);
+        let model_path = model_path.to_path_buf();
+        let cfg = cfg.clone();
+        let prompt_ids = prompt_ids.to_vec();
+
+        tokio::spawn(async move {
+            // Build the session inside the spawned task so weight loading
+            // doesn't block the caller (and so the session lives entirely
+            // inside this task).
+            let mut session: RequestSession<B> = match self
+                .build_session(&model_path, &cfg, leader_layers)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+            };
+
+            // Prefill.
+            let last_logits =
+                match step_through_cluster_session(&mut session, &prompt_ids, false).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                };
+            session.current_pos = prompt_ids.len();
+            let first = sample(&last_logits, &sampling);
+            if tx.send(Ok(first)).await.is_err() {
+                return;
+            }
+            let mut last_token = first;
+
+            for _ in 1..max_tokens {
+                let next_logits = match step_through_cluster_session(
+                    &mut session,
+                    &[last_token as i32],
+                    false,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                };
+                session.current_pos += 1;
+                let next = sample(&next_logits, &sampling);
+                if tx.send(Ok(next)).await.is_err() {
+                    return;
+                }
+                last_token = next;
+            }
+        });
+
+        rx
     }
 }
 

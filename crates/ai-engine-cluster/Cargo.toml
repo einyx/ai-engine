@@ -11,6 +11,7 @@ ai-engine-provider.workspace = true
 ai-engine-runtime.workspace = true
 ai-engine-tokenizer.workspace = true
 anyhow.workspace = true
+async-stream.workspace = true
 async-trait.workspace = true
 burn = { workspace = true, features = ["std"] }
 burn-ndarray = { workspace = true }

@@ -14,7 +14,7 @@
 use ai_engine_provider::{
     error::ProviderError,
     openai,
-    provider::{CallCtx, Capabilities, Credentials, Provider},
+    provider::{CallCtx, Capabilities, Credentials, EventStream, Provider},
 };
 use ai_engine_runtime::config::ModelConfig;
 use ai_engine_runtime::sample::SamplingConfig;
@@ -200,6 +200,103 @@ impl Provider for ClusterProvider {
             }),
             extras: Default::default(),
         })
+    }
+
+    async fn chat_stream(
+        &self,
+        req: openai::ChatRequest,
+        _creds: &Credentials,
+        ctx: &CallCtx,
+    ) -> Result<EventStream<openai::ChatStreamEvent>, ProviderError> {
+        if self.role == Role::Worker {
+            return Err(ProviderError::Unsupported);
+        }
+        let state = self.state.as_ref().ok_or_else(|| {
+            ProviderError::InvalidResponse("cluster provider has no leader state".into())
+        })?;
+
+        let prompt = render_prompt(&req);
+        let max_tokens = req.max_tokens.unwrap_or(256) as usize;
+        let sampling = SamplingConfig {
+            temperature: req.temperature.unwrap_or(1.0),
+            top_p: None,
+            top_k: None,
+            seed: ctx.request_id.as_u128() as u64,
+        };
+
+        let st = state.clone();
+        let prompt_ids: Vec<u32> = st
+            .tokenizer
+            .encode(&prompt)
+            .map_err(|e| ProviderError::InvalidResponse(format!("tokenize: {e}")))?;
+        let prompt_ids_i32: Vec<i32> = prompt_ids.iter().map(|x| *x as i32).collect();
+
+        let leader_layers = st.leader_layers.clone();
+        let model_path = st.model_path.clone();
+        let model_cfg = st.model_cfg.clone();
+
+        // Spawn the generation task; it pushes tokens onto an mpsc channel.
+        let mut rx = st.leader.clone().generate_stream::<burn_ndarray::NdArray>(
+            &model_path,
+            &model_cfg,
+            leader_layers,
+            &prompt_ids_i32,
+            max_tokens,
+            sampling,
+        );
+
+        let id = format!("chatcmpl-{}", ctx.request_id);
+        let model = req.model.clone();
+        let tokenizer = st.tokenizer.clone();
+
+        let stream = async_stream::stream! {
+            while let Some(item) = rx.recv().await {
+                match item {
+                    Ok(token) => {
+                        let piece = match tokenizer.decode(&[token]) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                yield Err(ProviderError::InvalidResponse(format!(
+                                    "decode: {e}"
+                                )));
+                                return;
+                            }
+                        };
+                        let raw = serde_json::json!({
+                            "id": id,
+                            "object": "chat.completion.chunk",
+                            "model": model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": { "content": piece },
+                                "finish_reason": serde_json::Value::Null,
+                            }],
+                        });
+                        yield Ok(openai::ChatStreamEvent { raw });
+                    }
+                    Err(e) => {
+                        yield Err(ProviderError::InvalidResponse(format!(
+                            "generate_stream: {e}"
+                        )));
+                        return;
+                    }
+                }
+            }
+            // End-of-stream sentinel chunk.
+            let raw = serde_json::json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }],
+            });
+            yield Ok(openai::ChatStreamEvent { raw });
+        };
+
+        Ok(Box::pin(stream))
     }
 }
 
