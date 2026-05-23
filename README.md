@@ -3,7 +3,7 @@
 A Rust gateway for LLM APIs. Drop-in compatible with OpenAI and Anthropic SDKs;
 also serves any OpenAI-compatible upstream — Ollama, vLLM, LM Studio, OpenRouter — out of the box.
 
-**Status:** v0.2.0 — Distributed inference + gateway. Stateless proxy with
+**Status:** v0.2.1 — Streaming + concurrency. Stateless proxy with
 a typed pipeline architecture, single-node Rust inference, and pipeline-parallel
 distributed inference over QUIC. See `docs/superpowers/specs/` for the full design
 and `docs/superpowers/plans/` for the implementation plan.
@@ -292,3 +292,20 @@ Components:
 - `ai-engine-cluster::worker` / `::leader` — state machines.
 - `ai-engine-cluster::provider` — implements the existing `Provider`
   trait so the gateway pipeline routes to the cluster without changes.
+
+### v0.2.1 — Streaming + concurrency
+
+ai-engine v0.2.1 closes three v0.2.0 gaps:
+
+- **Per-token SSE streaming** on `/v1/chat/completions` when `stream: true`.
+- **Concurrent requests on one leader.** Multiple in-flight chat completions
+  are interleaved through the cluster via per-request bidi QUIC streams —
+  no more serialization on `&mut self`.
+- **Real partition Assignment** over QUIC. Workers wait for the leader's
+  manifest before loading weights; partition policy lives entirely on the
+  leader, including the optional `[[cluster.partition_override]]` blocks
+  in TOML.
+
+Updated known limitations (still deferred to v0.3+): mDNS auto-discovery,
+dynamic worker membership, automatic failover, quantization, tensor
+parallelism, web playground UI.
