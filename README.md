@@ -3,9 +3,102 @@
 A Rust gateway for LLM APIs. Drop-in compatible with OpenAI and Anthropic SDKs;
 also serves any OpenAI-compatible upstream — Ollama, vLLM, LM Studio, OpenRouter — out of the box.
 
-**Status:** v0.1.0 — Gateway Core (sub-project #1). Stateless proxy with
-a typed pipeline architecture. See `docs/superpowers/specs/` for the full design
+**Status:** v0.2.0 — Distributed inference + gateway. Stateless proxy with
+a typed pipeline architecture, single-node Rust inference, and pipeline-parallel
+distributed inference over QUIC. See `docs/superpowers/specs/` for the full design
 and `docs/superpowers/plans/` for the implementation plan.
+
+## v0.2.0 — Distributed inference + gateway (this release)
+
+ai-engine v0.2.0 ships three things in one binary:
+
+1. **Drop-in OpenAI / Anthropic / Ollama gateway** — proxy traffic to remote
+   API providers with a typed pipeline of `Stage`s (auth, content policy,
+   model routing, forwarding, logging). Original v0.1 functionality.
+
+2. **Single-node Rust inference** — load any Llama-3-family safetensors
+   checkpoint and serve it directly via burn (CPU / CUDA / Metal / WebGPU).
+   Bytes-tolerant gate verifies logits match HF transformers to within 1e-3.
+
+3. **Distributed pipeline-parallel inference** — partition a model across
+   multiple nodes connected over QUIC with fingerprint-pinned TLS. The
+   leader speaks HTTP; workers expose only `/healthz`. Each node loads its
+   assigned layer range from a shared safetensors checkpoint. A 3-node
+   loopback test verifies cluster output matches single-node baseline
+   exactly under greedy sampling.
+
+### Quickstart: standalone gateway
+
+Same as v0.1. See `ai-engine.toml.example`.
+
+### Quickstart: distributed cluster
+
+On each node, write `ai-engine.toml` describing the cluster. The cert
+fingerprint for each node is printed to stderr the first time the node
+starts; copy it into the config.
+
+```toml
+[[cluster]]
+id = "home"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.model]
+id = "llama-3-70b"
+config_path = "/srv/models/llama-3-70b/config.json"
+weights_path = "/srv/models/llama-3-70b/model.safetensors"
+tokenizer_path = "/srv/models/llama-3-70b/tokenizer.json"
+
+[[cluster.node]]
+id = "node-a"
+addr = "192.168.1.10:7700"
+cert_fingerprint = "sha256:..."
+backend = "cuda"
+
+[[cluster.node]]
+id = "node-b"
+addr = "192.168.1.11:7700"
+cert_fingerprint = "sha256:..."
+backend = "metal"
+
+[[provider]]
+id = "home-cluster"
+kind = "local-cluster"
+cluster = "home"
+
+[[route]]
+match = { model = "llama-3-70b" }
+provider = "home-cluster"
+
+[pipeline."/v1/chat/completions"]
+stages = ["auth", "model_route", "forward", "log"]
+```
+
+On each node run:
+
+```
+./ai-engine --config ai-engine.toml --node-id <this-node-id>
+```
+
+Send a chat completion to the leader as if it were OpenAI:
+
+```
+curl http://node-a:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "llama-3-70b", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+### Known limitations in v0.2.0 (deferred to v0.3+)
+
+- Single concurrent request per cluster (leader serializes via `&mut self`).
+- Non-streaming responses only (no SSE chunks during generation).
+- Static cluster membership — config-time only, no mDNS discovery.
+- No automatic failover when a worker dies mid-request.
+- bf16 / f16 / f32 only; no quantization (Q4/Q5/AWQ/GPTQ).
+- Workers compute their own layer range via even-split; capability-aware
+  partitioning is computed by the leader but Assignment isn't yet wired
+  back to workers over QUIC for them to load weights accordingly.
+- Pipeline-parallel only (no tensor parallelism).
 
 ## Why
 
@@ -155,7 +248,13 @@ edits to the pipeline machinery:
 - **#7** — RAG / knowledge base over Qdrant.
 - **#8** — Admin REST API, Helm chart, container, migrations CLI.
 
-## Single-node inference (v0.2-alpha preview)
+## License
+
+Apache-2.0.
+
+## Release history
+
+### v0.2.0-alpha.1 — Single-node inference preview
 
 ai-engine v0.2-alpha can load a Llama-3-family safetensors checkpoint
 and run inference directly — no cluster yet. See the test fixture at
@@ -163,11 +262,6 @@ and run inference directly — no cluster yet. See the test fixture at
 and the bytes-tolerant correctness gate in
 `crates/ai-engine-runtime/tests/reference_logits.rs` that verifies the
 burn-based forward pass matches HF transformers to within 1e-3.
-
-This is preview functionality; the full v0.2.0 release requires the cluster
-configuration described in
-`docs/superpowers/specs/2026-05-23-ai-engine-distributed-inference-design.md`.
-Plan 2 in `docs/superpowers/plans/` will cover the distributed pieces.
 
 Supported model families (safetensors layout):
 - Llama 3.x
@@ -178,16 +272,13 @@ Supported model families (safetensors layout):
 Backends compiled by default: CPU (ndarray) and WebGPU (covers Metal on macOS,
 Vulkan on Linux). CUDA available behind the `backend-cuda` feature.
 
-## Distributed inference (v0.2-alpha.2 preview)
+### v0.2.0-alpha.2 — Distributed inference preview
 
 ai-engine v0.2-alpha.2 adds the `ai-engine-cluster` crate: a leader/worker
 QUIC-based pipeline-parallel inference coordinator. A 3-node loopback test
 in `crates/ai-engine-cluster/tests/inprocess_cluster.rs` verifies that the
 cluster path produces logits matching the single-node baseline to within
 1e-3 on the toy-llama-3 fixture.
-
-The cluster is not yet wired into the binary or the TOML config — that's
-Plan 3 (final v0.2.0 release).
 
 Components:
 - `ai-engine-cluster::tls` — self-signed ed25519 cert generation + SHA-256
@@ -201,7 +292,3 @@ Components:
 - `ai-engine-cluster::worker` / `::leader` — state machines.
 - `ai-engine-cluster::provider` — implements the existing `Provider`
   trait so the gateway pipeline routes to the cluster without changes.
-
-## License
-
-Apache-2.0.
