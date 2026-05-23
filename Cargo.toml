@@ -44,3 +44,5 @@ ai-engine-anthropic = { path = "crates/ai-engine-anthropic" }
 ai-engine-stages    = { path = "crates/ai-engine-stages" }
 ai-engine-config    = { path = "crates/ai-engine-config" }
 ai-engine-http      = { path = "crates/ai-engine-http" }
+ai-engine-tokenizer = { path = "crates/ai-engine-tokenizer" }
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
