@@ -9,6 +9,7 @@ pub mod protocol;
 pub mod tensor_io;
 pub mod tls;
 pub mod transport;
+pub mod worker;
 
 #[cfg(test)]
 mod smoke_compile_test {
