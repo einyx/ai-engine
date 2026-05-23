@@ -107,4 +107,6 @@ pub struct EmbeddingItem {
     pub embedding: Vec<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object: Option<String>,
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, Value>,
 }
