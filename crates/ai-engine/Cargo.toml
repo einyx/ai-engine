@@ -13,8 +13,12 @@ path = "src/lib.rs"
 name = "ai-engine"
 path = "src/main.rs"
 
+[features]
+backend-candle = ["dep:ai-engine-candle"]
+
 [dependencies]
 ai-engine-anthropic.workspace = true
+ai-engine-candle = { path = "../ai-engine-candle", optional = true }
 ai-engine-cluster.workspace = true
 ai-engine-config.workspace = true
 ai-engine-core.workspace = true

@@ -325,6 +325,28 @@ fn build_gateway_app_state(
                     ))
                 }
             }
+            "candle-local" => {
+                #[cfg(feature = "backend-candle")]
+                {
+                    let weights = p.weights_path.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("provider '{}': candle-local requires weights_path", p.id)
+                    })?;
+                    let gguf = std::path::Path::new(weights);
+                    let device = p.device.as_deref().unwrap_or("auto");
+                    let pool_size = p.pool_size.unwrap_or(2);
+                    let cp = ai_engine_candle::CandleProvider::new(
+                        &p.id, gguf, device, pool_size,
+                    )?;
+                    Arc::new(cp) as Arc<dyn Provider>
+                }
+                #[cfg(not(feature = "backend-candle"))]
+                {
+                    anyhow::bail!(
+                        "provider '{}' uses kind=candle-local but this binary was built without the 'backend-candle' feature; rebuild with --features backend-candle",
+                        p.id
+                    );
+                }
+            }
             other => anyhow::bail!(
                 "unknown provider kind `{other}` (validated upstream — this is a bug)"
             ),
