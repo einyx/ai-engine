@@ -8,5 +8,6 @@ pub mod device;
 pub mod model;
 pub mod pool;
 pub mod provider;
+pub mod template;
 
 pub use provider::CandleProvider;
