@@ -653,3 +653,56 @@ Known limitations:
   For long prompts, prefill still dominates total latency.
 - Per-call BLAS dispatch overhead is now visible; further wins likely
   require batching multiple layers' matmuls or moving to a GPU backend.
+
+### v0.4.0-alpha.1 — native-quantized local GPU inference (candle)
+
+ai-engine v0.4.0-alpha.1 adds a new single-node local provider,
+`kind = "candle-local"`, backed by
+`candle_transformers::models::quantized_llama`. Unlike the burn cluster
+path (which dequantizes GGUF weights to f32 before matmul), candle keeps
+the weights packed and runs **native quantized matmul** directly on
+CUDA, Metal, or CPU. On a GPU this moves the whole decode loop onto the
+device and unlocks a large throughput jump.
+
+Configure a candle-local provider in `ai-engine.toml`:
+
+```toml
+[[provider]]
+id = "llama-gpu"
+kind = "candle-local"
+weights_path = "/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
+device = "auto"        # "auto" | "cpu" | "cuda" | "metal"
+pool_size = 1          # number of model instances in the pool
+```
+
+Build with the candle backend feature (CPU by default):
+
+```bash
+cargo build --release --features backend-candle
+# For CUDA (requires the nvcc toolkit; first build compiles CUDA kernels):
+cargo build --release --features backend-candle-cuda
+```
+
+Measured on real Llama-3.2-1B-Instruct-Q4_0 GGUF, 20-token completion,
+prompt "Hello, who are you?" (RTX 4070, CUDA 12.0):
+
+| backend | tokens/sec | output |
+|---|---|---|
+| CPU (`backend-candle`) | 1.14 | coherent |
+| GPU (`backend-candle-cuda`) | **122.0** | coherent |
+
+Both produced the same coherent completion:
+`"You: I am a bot, a language model designed to assist and communicate with humans. I am"`.
+GPU usage was confirmed via `nvidia-smi` (utilization peaked at 94%,
+device memory climbed as the model loaded). The GPU path is ~107× the
+candle CPU path and ~360× the prior burn-CPU sgemv baseline (0.338
+tok/s).
+
+Scope:
+- Llama-3 family GGUF models only (Q4_0 verified), single-node.
+- The burn cluster (`kind = "local-cluster"`) is unchanged and remains
+  the path for multi-node distributed inference.
+- An env-gated real-model smoke lives at
+  `crates/ai-engine/tests/candle_smoke.rs`:
+  `AI_ENGINE_REAL_GGUF=/path/to/model.gguf cargo test -p ai-engine
+  --test candle_smoke --features backend-candle -- --ignored --nocapture`.

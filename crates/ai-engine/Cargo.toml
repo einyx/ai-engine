@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [features]
 backend-candle = ["dep:ai-engine-candle"]
+backend-candle-cuda = ["backend-candle", "ai-engine-candle/cuda"]
 
 [dependencies]
 ai-engine-anthropic.workspace = true
@@ -47,4 +48,5 @@ reqwest = { workspace = true, features = ["blocking"] }
 serde_json.workspace = true
 tempfile = "3"
 tokio = { workspace = true }
+uuid.workspace = true
 wiremock.workspace = true
