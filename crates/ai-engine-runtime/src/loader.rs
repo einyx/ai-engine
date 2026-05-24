@@ -110,6 +110,11 @@ pub fn load_range<B: Backend>(
             // Q4 lm_head is stored pre-transposed in math order [hidden, vocab].
             // The embedding table is [vocab, hidden]; swap dims to recover it.
             LinearWeight::Q4(q) => Ok(q.dequantize().swap_dims(0, 1)),
+            // The safetensors loader never produces a Q4Gguf variant — that
+            // path only originates from `load_gguf`.
+            LinearWeight::Q4Gguf(_) => {
+                unreachable!("safetensors loader cannot produce LinearWeight::Q4Gguf")
+            }
         }
     };
 

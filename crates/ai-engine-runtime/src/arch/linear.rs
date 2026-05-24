@@ -1,7 +1,9 @@
+use crate::gguf::q4_0::Q4GgufTensor;
 use crate::quant::{Q4Tensor, QuantizedTensor};
 use burn::tensor::{backend::Backend, Tensor};
 
-/// A Linear's weight matrix — dense, Q8-quantized, or Q4-quantized.
+/// A Linear's weight matrix — dense, Q8-quantized, Q4-quantized, or native
+/// GGUF Q4_0-quantized.
 ///
 /// All forms produce the same `[in, out]`-shaped weight from the caller's
 /// perspective. `matmul(x: [batch, seq, in]) -> [batch, seq, out]` handles
@@ -10,6 +12,7 @@ pub enum LinearWeight<B: Backend> {
     Dense(Tensor<B, 2>),
     Quantized(QuantizedTensor<B>),
     Q4(Q4Tensor<B>),
+    Q4Gguf(Q4GgufTensor<B>),
 }
 
 impl<B: Backend> LinearWeight<B> {
@@ -18,6 +21,7 @@ impl<B: Backend> LinearWeight<B> {
             Self::Dense(t) => t.dims(),
             Self::Quantized(q) => q.shape(),
             Self::Q4(q) => q.shape(),
+            Self::Q4Gguf(q) => q.shape(),
         }
     }
 
@@ -28,6 +32,7 @@ impl<B: Backend> LinearWeight<B> {
             Self::Dense(w) => x.matmul(w.clone().unsqueeze()),
             Self::Quantized(q) => x.matmul(q.dequantize().unsqueeze()),
             Self::Q4(q) => x.matmul(q.dequantize().unsqueeze()),
+            Self::Q4Gguf(q) => x.matmul(q.dequantize().unsqueeze()),
         }
     }
 
@@ -60,22 +65,31 @@ impl<B: Backend> LinearWeight<B> {
                 let dq = q.dequantize().swap_dims(a, b);
                 Self::Q4(Q4Tensor::quantize_from(dq))
             }
+            Self::Q4Gguf(_) => {
+                // GGUF Q4_0 weights are always loaded in math order `[in, out]`
+                // (GGUF's native shape convention). `swap_dims` is conceptually
+                // wrong here — callers should use `ensure_math_order` instead,
+                // which is a no-op for this variant. If we DO get called, a
+                // force-dequantize + swap + re-encode would be lossy; we panic
+                // to surface the misuse.
+                panic!("swap_dims called on Q4Gguf — use ensure_math_order instead");
+            }
         }
     }
 
     /// Ensure the weight is in math order `[in, out]`.
     ///
-    /// Q4 fixtures store weights pre-transposed (already in `[in, out]` math
-    /// order, so the loader never has to call `swap_dims` and re-quantize).
-    /// Dense and Q8 fixtures follow HF's `[out, in]` layout and need the
-    /// `swap_dims(0, 1)` flip at load time.
+    /// Q4 and Q4Gguf fixtures store weights pre-transposed (already in
+    /// `[in, out]` math order, so the loader never has to call `swap_dims`
+    /// and re-quantize). Dense and Q8 fixtures follow HF's `[out, in]` layout
+    /// and need the `swap_dims(0, 1)` flip at load time.
     ///
     /// Callers that previously called `<weight>.swap_dims(0, 1)` immediately
     /// after loading should use this helper instead — it dispatches correctly
-    /// across all three variants.
+    /// across all four variants.
     pub fn ensure_math_order(self) -> Self {
         match self {
-            Self::Q4(_) => self,
+            Self::Q4(_) | Self::Q4Gguf(_) => self,
             _ => self.swap_dims(0, 1),
         }
     }
