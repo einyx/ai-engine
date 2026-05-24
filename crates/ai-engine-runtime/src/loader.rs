@@ -8,12 +8,15 @@
 
 use crate::arch::linear::LinearWeight;
 use crate::config::ModelConfig;
-use crate::name_map::{TensorId, WeightNameMap};
+use crate::gguf::q4_0::Q4GgufTensor;
+use crate::gguf::tensor_desc::{GgmlType, TensorDesc};
+use crate::name_map::{hf_from_gguf, TensorId, WeightNameMap};
 use crate::quant::{Q4Tensor, Q4_GROUP_SIZE, QuantizedTensor};
 use anyhow::Context;
 use burn::tensor::{backend::Backend, Tensor, TensorData};
 use memmap2::Mmap;
 use safetensors::SafeTensors;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 
@@ -379,6 +382,259 @@ fn load_linear_weight<B: Backend>(
                 TensorData::new(f32_data, shape2),
                 device,
             )))
+        }
+    }
+}
+
+/// Alignment for the tensor-data section of a GGUF file. The format spec
+/// allows `general.alignment` metadata to override this, but virtually all
+/// real-world files use the default of 32 bytes.
+const TENSOR_DATA_ALIGN: u64 = 32;
+
+/// Load a GGUF Q4_0 (with optional F32/F16/BF16 boundary tensors) checkpoint.
+///
+/// Mirrors `load_range` for safetensors: returns a `LoadedWeights<B>` covering
+/// the requested layer range plus optional embedding / final-norm / output
+/// projection. Quantized linear weights are kept native (`LinearWeight::Q4Gguf`).
+pub fn load_gguf<B: Backend>(
+    path: &Path,
+    cfg: &ModelConfig,
+    layer_range: Range<usize>,
+    hosts_embedding: bool,
+    hosts_output: bool,
+    device: &B::Device,
+) -> anyhow::Result<LoadedWeights<B>> {
+    let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mmap =
+        unsafe { Mmap::map(&file) }.with_context(|| format!("mmap {}", path.display()))?;
+
+    // 1. Header.
+    let (hdr, header_consumed) = crate::gguf::header::parse_header(&mmap)?;
+    let mut cursor = header_consumed;
+
+    // 2. Metadata.
+    let mut metadata: HashMap<String, crate::gguf::metadata::GgufValue> = HashMap::new();
+    for _ in 0..hdr.metadata_count {
+        let (k, v, consumed) = crate::gguf::metadata::parse_kv(&mmap[cursor..])?;
+        metadata.insert(k, v);
+        cursor += consumed;
+    }
+
+    // 3. Tensor descriptors.
+    let mut descs: Vec<TensorDesc> = Vec::with_capacity(hdr.tensor_count as usize);
+    for _ in 0..hdr.tensor_count {
+        let (d, consumed) = crate::gguf::tensor_desc::parse_tensor_desc(&mmap[cursor..])?;
+        descs.push(d);
+        cursor += consumed;
+    }
+
+    // 4. Align cursor to the start of the tensor data section.
+    let alignment = TENSOR_DATA_ALIGN;
+    cursor = ((cursor as u64 + alignment - 1) & !(alignment - 1)) as usize;
+    let data_start = cursor;
+
+    // 5. Build {hf_name → (desc, slice)} lookup. Slices borrow from `mmap`;
+    //    every helper closure below captures `by_hf` by reference, so `mmap`
+    //    must outlive both — which it does because both live in this fn.
+    let mut by_hf: HashMap<String, (TensorDesc, &[u8])> = HashMap::new();
+    for d in &descs {
+        let Some(hf_name) = hf_from_gguf(&d.name) else {
+            continue;
+        };
+        let off = data_start + d.offset as usize;
+        let size = gguf_tensor_bytes(d)?;
+        if off + size > mmap.len() {
+            anyhow::bail!("tensor `{}` extends past file end", d.name);
+        }
+        by_hf.insert(hf_name, (d.clone(), &mmap[off..off + size]));
+    }
+
+    // 6. Load helpers.
+    let load_2d = |hf_name: &str| -> anyhow::Result<Tensor<B, 2>> {
+        let (d, slice) = by_hf
+            .get(hf_name)
+            .ok_or_else(|| anyhow::anyhow!("missing tensor `{hf_name}` in GGUF"))?;
+        load_dense_2d_gguf::<B>(d, slice, device)
+    };
+    let load_1d = |hf_name: &str| -> anyhow::Result<Tensor<B, 1>> {
+        let (d, slice) = by_hf
+            .get(hf_name)
+            .ok_or_else(|| anyhow::anyhow!("missing tensor `{hf_name}` in GGUF"))?;
+        load_dense_1d_gguf::<B>(d, slice, device)
+    };
+    let load_lin = |hf_name: &str| -> anyhow::Result<LinearWeight<B>> {
+        let (d, slice) = by_hf
+            .get(hf_name)
+            .ok_or_else(|| anyhow::anyhow!("missing tensor `{hf_name}` in GGUF"))?;
+        match d.ggml_type {
+            GgmlType::Q4_0 => {
+                let shape = [d.shape[0] as usize, d.shape[1] as usize];
+                Ok(LinearWeight::Q4Gguf(Q4GgufTensor::from_blocks(
+                    slice.to_vec(),
+                    shape,
+                    device,
+                )?))
+            }
+            _ => Ok(LinearWeight::Dense(load_dense_2d_gguf::<B>(
+                d, slice, device,
+            )?)),
+        }
+    };
+
+    let embedding = if hosts_embedding {
+        let from_embed = load_2d("model.embed_tokens.weight");
+        match from_embed {
+            Ok(t) => Some(t),
+            Err(_) => {
+                // Tied-embedding fallback: only `output.weight` (lm_head) is
+                // present. GGUF stores it in math order `[hidden, vocab]`; the
+                // embedding table needs `[vocab, hidden]`.
+                let (d, slice) = by_hf.get("lm_head.weight").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "neither model.embed_tokens.weight nor lm_head.weight found in GGUF"
+                    )
+                })?;
+                match d.ggml_type {
+                    GgmlType::Q4_0 => {
+                        let shape = [d.shape[0] as usize, d.shape[1] as usize];
+                        let q = Q4GgufTensor::<B>::from_blocks(slice.to_vec(), shape, device)?;
+                        Some(q.dequantize().swap_dims(0, 1))
+                    }
+                    _ => Some(load_dense_2d_gguf::<B>(d, slice, device)?.swap_dims(0, 1)),
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut layers = Vec::with_capacity(layer_range.len());
+    for i in layer_range.clone() {
+        layers.push(LayerWeights {
+            attn_norm: load_1d(&format!("model.layers.{i}.input_layernorm.weight"))?,
+            q_proj: load_lin(&format!("model.layers.{i}.self_attn.q_proj.weight"))?,
+            k_proj: load_lin(&format!("model.layers.{i}.self_attn.k_proj.weight"))?,
+            v_proj: load_lin(&format!("model.layers.{i}.self_attn.v_proj.weight"))?,
+            o_proj: load_lin(&format!("model.layers.{i}.self_attn.o_proj.weight"))?,
+            ffn_norm: load_1d(&format!(
+                "model.layers.{i}.post_attention_layernorm.weight"
+            ))?,
+            ffn_gate: load_lin(&format!("model.layers.{i}.mlp.gate_proj.weight"))?,
+            ffn_up: load_lin(&format!("model.layers.{i}.mlp.up_proj.weight"))?,
+            ffn_down: load_lin(&format!("model.layers.{i}.mlp.down_proj.weight"))?,
+        });
+    }
+
+    let final_norm = if hosts_output {
+        Some(load_1d("model.norm.weight")?)
+    } else {
+        None
+    };
+
+    let output_proj = if hosts_output && !cfg.tie_word_embeddings {
+        Some(load_lin("lm_head.weight")?)
+    } else {
+        None
+    };
+
+    let _ = metadata; // reserved for future use (chat template, vocab, etc.)
+    Ok(LoadedWeights {
+        embedding,
+        layers,
+        final_norm,
+        output_proj,
+    })
+}
+
+/// Byte size of a GGUF tensor on disk, given its descriptor.
+fn gguf_tensor_bytes(d: &TensorDesc) -> anyhow::Result<usize> {
+    let total: u64 = d.shape.iter().product();
+    match d.ggml_type {
+        GgmlType::F32 => Ok((total * 4) as usize),
+        GgmlType::F16 | GgmlType::BF16 => Ok((total * 2) as usize),
+        GgmlType::Q4_0 => {
+            let block = crate::gguf::q4_0::Q4_0_BLOCK_SIZE as u64;
+            let bytes_per_block = crate::gguf::q4_0::Q4_0_BYTES_PER_BLOCK as u64;
+            if total % block != 0 {
+                anyhow::bail!("Q4_0 tensor `{}` not multiple of 32 elements", d.name);
+            }
+            Ok((total / block * bytes_per_block) as usize)
+        }
+    }
+}
+
+/// Decode a 2D GGUF tensor (F32/F16/BF16) into burn's row-major `[in, out]`
+/// layout. GGUF stores tensors in `[in, out]` math order but column-major
+/// over those dims, so we transpose during decode.
+fn load_dense_2d_gguf<B: Backend>(
+    d: &TensorDesc,
+    bytes: &[u8],
+    device: &B::Device,
+) -> anyhow::Result<Tensor<B, 2>> {
+    if d.shape.len() != 2 {
+        anyhow::bail!("`{}` expected 2D, got {} dims", d.name, d.shape.len());
+    }
+    let in_dim = d.shape[0] as usize;
+    let out_dim = d.shape[1] as usize;
+    let total = in_dim * out_dim;
+    let f32_data = bytes_to_f32_vec_gguf(bytes, d.ggml_type, total)?;
+    // GGUF flat is column-major over [in, out]; rewrite into row-major.
+    let mut burn_flat = vec![0.0_f32; total];
+    for i in 0..in_dim {
+        for j in 0..out_dim {
+            burn_flat[i * out_dim + j] = f32_data[j * in_dim + i];
+        }
+    }
+    Ok(Tensor::<B, 2>::from_data(
+        TensorData::new(burn_flat, [in_dim, out_dim]),
+        device,
+    ))
+}
+
+fn load_dense_1d_gguf<B: Backend>(
+    d: &TensorDesc,
+    bytes: &[u8],
+    device: &B::Device,
+) -> anyhow::Result<Tensor<B, 1>> {
+    if d.shape.len() != 1 {
+        anyhow::bail!("`{}` expected 1D, got {} dims", d.name, d.shape.len());
+    }
+    let total = d.shape[0] as usize;
+    let f32_data = bytes_to_f32_vec_gguf(bytes, d.ggml_type, total)?;
+    Ok(Tensor::<B, 1>::from_data(
+        TensorData::new(f32_data, [total]),
+        device,
+    ))
+}
+
+fn bytes_to_f32_vec_gguf(
+    bytes: &[u8],
+    ggml_type: GgmlType,
+    expected_elements: usize,
+) -> anyhow::Result<Vec<f32>> {
+    match ggml_type {
+        GgmlType::F32 => {
+            let v: &[f32] = bytemuck::cast_slice(bytes);
+            if v.len() != expected_elements {
+                anyhow::bail!(
+                    "F32 element count mismatch: expected {expected_elements}, got {}",
+                    v.len()
+                );
+            }
+            Ok(v.to_vec())
+        }
+        GgmlType::F16 => {
+            let v: &[u16] = bytemuck::cast_slice(bytes);
+            Ok(v.iter().map(|b| half::f16::from_bits(*b).to_f32()).collect())
+        }
+        GgmlType::BF16 => {
+            let v: &[u16] = bytemuck::cast_slice(bytes);
+            Ok(v.iter()
+                .map(|b| half::bf16::from_bits(*b).to_f32())
+                .collect())
+        }
+        GgmlType::Q4_0 => {
+            anyhow::bail!("Q4_0 cannot be loaded as dense; use the Q4Gguf path")
         }
     }
 }

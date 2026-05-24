@@ -100,3 +100,37 @@ impl WeightNameMap {
         }
     }
 }
+
+/// Translate a GGUF tensor name to its HF equivalent.
+///
+/// Llama-family GGUF checkpoints use a flat `blk.{i}.<kind>.weight` namespace
+/// (plus a handful of boundary tensors). The rest of the runtime is built
+/// around HF naming, so the GGUF loader translates every tensor it sees
+/// through this helper. Unknown names return `None` — the caller can skip
+/// those tensors silently (e.g. `rope_freqs.weight`, tokenizer-side data).
+pub fn hf_from_gguf(gguf_name: &str) -> Option<String> {
+    match gguf_name {
+        "token_embd.weight"  => Some("model.embed_tokens.weight".into()),
+        "output_norm.weight" => Some("model.norm.weight".into()),
+        "output.weight"      => Some("lm_head.weight".into()),
+        _ => {
+            // Layer-scoped names: "blk.N.{kind}.weight"
+            let stripped = gguf_name.strip_prefix("blk.")?;
+            let dot = stripped.find('.')?;
+            let layer: usize = stripped[..dot].parse().ok()?;
+            let rest = &stripped[dot + 1..];
+            match rest {
+                "attn_norm.weight"   => Some(format!("model.layers.{layer}.input_layernorm.weight")),
+                "attn_q.weight"      => Some(format!("model.layers.{layer}.self_attn.q_proj.weight")),
+                "attn_k.weight"      => Some(format!("model.layers.{layer}.self_attn.k_proj.weight")),
+                "attn_v.weight"      => Some(format!("model.layers.{layer}.self_attn.v_proj.weight")),
+                "attn_output.weight" => Some(format!("model.layers.{layer}.self_attn.o_proj.weight")),
+                "ffn_norm.weight"    => Some(format!("model.layers.{layer}.post_attention_layernorm.weight")),
+                "ffn_gate.weight"    => Some(format!("model.layers.{layer}.mlp.gate_proj.weight")),
+                "ffn_up.weight"      => Some(format!("model.layers.{layer}.mlp.up_proj.weight")),
+                "ffn_down.weight"    => Some(format!("model.layers.{layer}.mlp.down_proj.weight")),
+                _ => None,
+            }
+        }
+    }
+}
