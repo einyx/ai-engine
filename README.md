@@ -396,3 +396,46 @@ Known limitations:
 - The GGUF reader doesn't yet wire into the TOML config — there's no
   `model.gguf` path in `[cluster.model]`. Operators use `load_gguf` from
   code or extend `build_app_state` themselves. Plan 9 wires this.
+
+### v0.3.0-alpha.4 — mDNS auto-discovery
+
+ai-engine v0.3.0-alpha.4 lets cluster nodes find each other on the LAN
+via mDNS. No more pasting cert fingerprints into every `[[cluster.node]]`
+block.
+
+How it works:
+- Workers announce themselves on startup with TXT records: cluster_id,
+  node_id, role=worker, protocol_version, fingerprint, backend.
+- The leader, when `[[cluster.discover]]` is set, browses for
+  `_ai-engine._tcp.local.` services and TOFU-pins the announced
+  fingerprints.
+- The existing static `[[cluster.node]]` path is unchanged.
+
+Config:
+
+```toml
+[[cluster]]
+id = "home-lab"
+leader = "leader"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.discover]
+expected_workers = 2
+timeout_secs = 30
+
+[cluster.model]
+id = "llama-3-70b"
+# ...
+```
+
+Known limitations:
+- TOFU only on first announcement; later contradictory announcements
+  for the same node_id are ignored.
+- Dynamic membership not supported — workers joining a running cluster
+  still require restart.
+- `cert_fingerprint` is still required on `[[cluster.node]]` entries
+  even when `[[cluster.discover]]` is set (placeholder zeros suffice).
+  Cleanup is a future TODO.
+- mDNS multicast may be unavailable on some restricted networks /
+  Docker setups. The `multiproc_smoke_mdns` test is `#[ignore]`d for
+  portability.
