@@ -1,0 +1,24 @@
+[package]
+name = "ai-engine-candle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = []
+cuda = ["candle-core/cuda", "candle-transformers/cuda"]
+metal = ["candle-core/metal", "candle-transformers/metal"]
+
+[dependencies]
+candle-core = { workspace = true }
+candle-transformers = { workspace = true }
+ai-engine-provider = { path = "../ai-engine-provider" }
+ai-engine-tokenizer = { path = "../ai-engine-tokenizer" }
+ai-engine-runtime = { path = "../ai-engine-runtime" }
+anyhow.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+uuid = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
