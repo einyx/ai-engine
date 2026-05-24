@@ -560,3 +560,60 @@ The toy GGUF fixture was regenerated to match real ggml format
 (`scripts/generate_gguf_q4_0_fixture.py` now applies the same Q/K
 permutation llama.cpp does), so the toy and real paths exercise
 identical code.
+
+### v0.3.0-alpha.8 — 2.5× decode throughput on CPU (cache + BLAS)
+
+ai-engine v0.3.0-alpha.8 cuts real-model decode latency from ~14.5 s/token
+to ~5.8 s/token (2.5×) on a 1B-parameter Llama-3 Q4_0 GGUF, single-process
+CPU. Output quality and the cluster topology are unchanged; the speedup
+comes from removing wasted work in the hot path.
+
+The journey:
+
+1. **Profile harness** (`crates/ai-engine-runtime/examples/profile_decode.rs`)
+   — single-process in-memory benchmark of the forward pass on a real
+   GGUF, no cluster overhead. Made it possible to attribute cost cleanly.
+2. **`perf record` of a 10-step decode** identified two top costs:
+   - 37.5% in `Q4GgufTensor::dequantize` (called 112× per token, allocating
+     ~500 MB of throwaway f32 per token).
+   - 43.1% in `matrixmultiply` (`sgemm_kernel_target_fma` + `pack_avx2`)
+     — the pure-Rust GEMM kernel in burn-ndarray's default backend.
+3. **Q4_0 dequant caching** (`Q4GgufTensor::dequantize_cached` with
+   `OnceLock<Tensor<B, 2>>`) eliminates the per-call dequant. The
+   profile-visible 37.5% drops to 0.5%; wall-clock didn't immediately
+   move because the matmul (parallelized over cores) was the gating cost.
+4. **BLAS linking** (`burn-ndarray` with the `blas-openblas` feature,
+   bundled and statically linked). OpenBLAS's hand-tuned kernels replace
+   the pure-Rust `matrixmultiply` path. matmul cost drops from 33.8% to
+   0.32%; packing cost drops from 9.3% to 1.1%. **Wall-clock 2.5×.**
+
+Per-step latency (real model: Llama-3.2-1B-Instruct-Q4_0, 3-process
+cluster, NdArray CPU backend):
+
+| | v0.3.0-alpha.7 | v0.3.0-alpha.8 |
+|---|---|---|
+| tokens/sec (in-process) | 0.069 | 0.172 |
+| avg per step | ~14.6 s | ~5.8 s |
+| dominant cost | matrixmultiply + dequant | OpenBLAS thread-pool dispatch |
+
+A new opt-in divergence harness
+(`crates/ai-engine-runtime/tests/divergence_trace.rs`) compares
+safetensors-loaded vs GGUF-loaded forward-pass activations layer by layer.
+It was built during the Llama-3 bug hunt that produced alpha.7 and is
+shipped as ongoing regression infrastructure. Run via:
+
+```bash
+AI_ENGINE_REAL_GGUF=/path/to/real.gguf \
+AI_ENGINE_REAL_SAFETENSORS=/path/to/safetensors/model.safetensors \
+  cargo test -p ai-engine-runtime --test divergence_trace -- --ignored --nocapture
+```
+
+Known limitations:
+
+- CPU still dominates; a GPU backend (burn-wgpu / burn-candle) would
+  give the next order-of-magnitude speedup. Deferred.
+- For decode (seq=1), the matmul is GEMV, not GEMM. ndarray currently
+  dispatches both through `sgemm`; routing seq=1 through `sgemv` directly
+  could cut another ~30-50%. Deferred.
+- OpenBLAS is the only BLAS backend tested. `blas-accelerate` (macOS)
+  and `blas-netlib` should work but aren't verified.
