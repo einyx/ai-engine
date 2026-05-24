@@ -9,6 +9,7 @@ pub mod config;
 pub mod kv_cache;
 pub mod loader;
 pub mod name_map;
+pub mod quant;
 pub mod request;
 pub mod sample;
 
@@ -17,5 +18,6 @@ pub use backend::BackendKind;
 pub use config::{ModelConfig, ModelFamily};
 pub use kv_cache::KvCacheSlot;
 pub use loader::{load_range, LoadedWeights};
+pub use quant::QuantizedTensor;
 pub use request::RequestState;
 pub use sample::{sample, SamplingConfig};
