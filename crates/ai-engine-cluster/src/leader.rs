@@ -17,7 +17,7 @@ use ai_engine_runtime::arch::linear::LinearWeight;
 use ai_engine_runtime::arch::rmsnorm::RmsNorm;
 use ai_engine_runtime::arch::rope::RotaryEmbedding;
 use ai_engine_runtime::config::ModelConfig;
-use ai_engine_runtime::loader::load_range;
+use ai_engine_runtime::loader::load_weights;
 use ai_engine_runtime::sample::{sample, SamplingConfig};
 use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
 use std::net::SocketAddr;
@@ -402,7 +402,7 @@ where
     B::Device: Default,
 {
     let device = B::Device::default();
-    let weights = load_range::<B>(model_path, cfg, leader_layers.clone(), true, true, &device)?;
+    let weights = load_weights::<B>(model_path, cfg, leader_layers.clone(), true, true, &device)?;
 
     let embed_tensor = weights
         .embedding

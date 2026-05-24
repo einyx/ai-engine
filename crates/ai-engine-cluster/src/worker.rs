@@ -11,7 +11,7 @@ use ai_engine_runtime::arch::rmsnorm::RmsNorm;
 use ai_engine_runtime::arch::rope::RotaryEmbedding;
 use ai_engine_runtime::config::ModelConfig;
 use ai_engine_runtime::kv_cache::KvCacheSlot;
-use ai_engine_runtime::loader::load_range;
+use ai_engine_runtime::loader::load_weights;
 use burn::tensor::backend::Backend;
 use quinn::Endpoint;
 use std::collections::HashMap;
@@ -122,7 +122,7 @@ where
     };
 
     // Load this worker's layer range from disk.
-    let weights = load_range::<B>(&model_path, &cfg, layer_range.clone(), false, false, &device)?;
+    let weights = load_weights::<B>(&model_path, &cfg, layer_range.clone(), false, false, &device)?;
 
     let mut blocks: Vec<DecoderBlock<B>> = Vec::with_capacity(layer_range.len());
     for layer in weights.layers {
