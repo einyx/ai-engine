@@ -5,6 +5,7 @@
 
 pub mod arch;
 pub mod backend;
+pub mod gguf;
 pub mod config;
 pub mod kv_cache;
 pub mod loader;
