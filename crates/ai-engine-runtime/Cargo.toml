@@ -30,5 +30,7 @@ thiserror.workspace = true
 tempfile.workspace = true
 tokenizers.workspace = true
 
+openblas-src = { version = "0.10", features = ["static"] }
+
 [dev-dependencies]
 burn-ndarray = { workspace = true }

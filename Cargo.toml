@@ -49,7 +49,8 @@ ai-engine-runtime = { path = "crates/ai-engine-runtime" }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 tempfile = "3"
 burn = { version = "0.21", default-features = false }
-burn-ndarray = "0.21"
+burn-ndarray = { version = "0.21", features = ["blas-openblas"] }
+openblas-src = { version = "0.10", features = ["static"] }
 burn-cuda = "0.21"
 burn-wgpu = "0.21"
 safetensors = "0.4"
