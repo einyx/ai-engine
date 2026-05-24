@@ -657,3 +657,37 @@ fn bytes_to_f32_vec(raw: &[u8], dtype: safetensors::Dtype) -> anyhow::Result<Vec
         other => anyhow::bail!("unsupported safetensors dtype: {other:?}"),
     }
 }
+
+/// Dispatch loader. Picks `load_gguf` or `load_range` based on file extension.
+/// `.gguf` → load_gguf. `.safetensors` (or no extension) → load_range.
+/// Other extensions error with a clear message.
+pub fn load_weights<B: Backend>(
+    path: &std::path::Path,
+    cfg: &crate::config::ModelConfig,
+    layer_range: std::ops::Range<usize>,
+    hosts_embedding: bool,
+    hosts_output: bool,
+    device: &B::Device,
+) -> anyhow::Result<LoadedWeights<B>> {
+    match path.extension().and_then(|s| s.to_str()) {
+        Some("gguf") => load_gguf::<B>(
+            path,
+            cfg,
+            layer_range,
+            hosts_embedding,
+            hosts_output,
+            device,
+        ),
+        Some("safetensors") | None => load_range::<B>(
+            path,
+            cfg,
+            layer_range,
+            hosts_embedding,
+            hosts_output,
+            device,
+        ),
+        Some(other) => anyhow::bail!(
+            "unsupported weights file extension `.{other}` (use `.safetensors` or `.gguf`)"
+        ),
+    }
+}

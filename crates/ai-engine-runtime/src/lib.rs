@@ -18,7 +18,7 @@ pub use arch::model::Model;
 pub use backend::BackendKind;
 pub use config::{ModelConfig, ModelFamily};
 pub use kv_cache::KvCacheSlot;
-pub use loader::{load_range, LoadedWeights};
+pub use loader::{load_gguf, load_range, load_weights, LoadedWeights};
 pub use quant::{Q4Tensor, Q4_GROUP_SIZE, QuantizedTensor};
 pub use request::RequestState;
 pub use sample::{sample, SamplingConfig};
