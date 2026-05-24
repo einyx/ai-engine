@@ -9,5 +9,4 @@ pub mod model;
 pub mod pool;
 pub mod provider;
 
-// re-export added in Task 6
-// pub use provider::CandleProvider;
+pub use provider::CandleProvider;
