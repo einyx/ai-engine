@@ -127,12 +127,12 @@ impl<B: Backend> Model<B> {
         //
         // Untied case: `weights.output_proj` is the lm_head tensor, which HF
         // serializes as `[vocab, hidden]`. Same transpose applies.
-        let output_weight = match (cfg.tie_word_embeddings, weights.output_proj) {
-            (true, _) => embed_tensor.swap_dims(0, 1),
+        let output_lw: LinearWeight<B> = match (cfg.tie_word_embeddings, weights.output_proj) {
+            (true, _) => LinearWeight::Dense(embed_tensor.swap_dims(0, 1)),
             (false, Some(w)) => w.swap_dims(0, 1),
             (false, None) => anyhow::bail!("untied output projection missing"),
         };
-        let output = OutputProjection::new(LinearWeight::Dense(output_weight));
+        let output = OutputProjection::new(output_lw);
 
         if weights.layers.len() != cfg.n_layers {
             anyhow::bail!(
@@ -153,20 +153,21 @@ impl<B: Backend> Model<B> {
                 device,
             );
             // HF stores each projection as [out, in]; transpose to [in, out].
+            // LinearWeight::swap_dims handles both Dense and Quantized variants.
             let attn = Attention::new(
-                LinearWeight::Dense(layer.q_proj.swap_dims(0, 1)),
-                LinearWeight::Dense(layer.k_proj.swap_dims(0, 1)),
-                LinearWeight::Dense(layer.v_proj.swap_dims(0, 1)),
-                LinearWeight::Dense(layer.o_proj.swap_dims(0, 1)),
+                layer.q_proj.swap_dims(0, 1),
+                layer.k_proj.swap_dims(0, 1),
+                layer.v_proj.swap_dims(0, 1),
+                layer.o_proj.swap_dims(0, 1),
                 rope,
                 cfg.n_heads,
                 cfg.n_kv_heads,
                 cfg.head_dim,
             );
             let ffn = SwiGluFfn::new(
-                LinearWeight::Dense(layer.ffn_gate.swap_dims(0, 1)),
-                LinearWeight::Dense(layer.ffn_up.swap_dims(0, 1)),
-                LinearWeight::Dense(layer.ffn_down.swap_dims(0, 1)),
+                layer.ffn_gate.swap_dims(0, 1),
+                layer.ffn_up.swap_dims(0, 1),
+                layer.ffn_down.swap_dims(0, 1),
             );
             blocks.push(DecoderBlock {
                 attn_norm,

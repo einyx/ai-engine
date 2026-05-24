@@ -27,4 +27,22 @@ impl<B: Backend> LinearWeight<B> {
             Self::Quantized(q) => x.matmul(q.dequantize().unsqueeze()),
         }
     }
+
+    /// Transpose a 2D linear weight (swap rows/cols). Used to convert
+    /// safetensors' `[out, in]` layout to the `[in, out]` layout our matmul
+    /// expects.
+    ///
+    /// For the Dense variant this is just `Tensor::swap_dims`. For the
+    /// Quantized variant we dequantize, swap, and requantize — losing a
+    /// tiny bit of precision per transpose. Acceptable because this happens
+    /// once per load.
+    pub fn swap_dims(self, a: usize, b: usize) -> Self {
+        match self {
+            Self::Dense(t) => Self::Dense(t.swap_dims(a, b)),
+            Self::Quantized(q) => {
+                let dq = q.dequantize().swap_dims(a, b);
+                Self::Quantized(QuantizedTensor::quantize_from(dq))
+            }
+        }
+    }
 }

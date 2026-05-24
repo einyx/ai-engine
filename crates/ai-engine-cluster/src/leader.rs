@@ -374,15 +374,15 @@ where
             .ok_or_else(|| anyhow::anyhow!("final_norm required for leader"))?,
         cfg.rms_norm_eps,
     );
-    let output_weight = if cfg.tie_word_embeddings {
-        embed_tensor.swap_dims(0, 1)
+    let output_lw: LinearWeight<B> = if cfg.tie_word_embeddings {
+        LinearWeight::Dense(embed_tensor.swap_dims(0, 1))
     } else {
         weights
             .output_proj
             .ok_or_else(|| anyhow::anyhow!("untied output projection missing"))?
             .swap_dims(0, 1)
     };
-    let output = OutputProjection::new(LinearWeight::Dense(output_weight));
+    let output = OutputProjection::new(output_lw);
 
     let mut blocks: Vec<DecoderBlock<B>> = Vec::with_capacity(leader_layers.len());
     for layer in weights.layers {
@@ -395,19 +395,19 @@ where
             &device,
         );
         let attn = Attention::new(
-            LinearWeight::Dense(layer.q_proj.swap_dims(0, 1)),
-            LinearWeight::Dense(layer.k_proj.swap_dims(0, 1)),
-            LinearWeight::Dense(layer.v_proj.swap_dims(0, 1)),
-            LinearWeight::Dense(layer.o_proj.swap_dims(0, 1)),
+            layer.q_proj.swap_dims(0, 1),
+            layer.k_proj.swap_dims(0, 1),
+            layer.v_proj.swap_dims(0, 1),
+            layer.o_proj.swap_dims(0, 1),
             rope,
             cfg.n_heads,
             cfg.n_kv_heads,
             cfg.head_dim,
         );
         let ffn = SwiGluFfn::new(
-            LinearWeight::Dense(layer.ffn_gate.swap_dims(0, 1)),
-            LinearWeight::Dense(layer.ffn_up.swap_dims(0, 1)),
-            LinearWeight::Dense(layer.ffn_down.swap_dims(0, 1)),
+            layer.ffn_gate.swap_dims(0, 1),
+            layer.ffn_up.swap_dims(0, 1),
+            layer.ffn_down.swap_dims(0, 1),
         );
         blocks.push(DecoderBlock {
             attn_norm,
