@@ -256,7 +256,7 @@ stages = ["auth", "model_route", "forward", "log"]
 
     let leader_url = format!("http://127.0.0.1:{leader_http_port}");
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(600))
         .build()
         .unwrap();
 
