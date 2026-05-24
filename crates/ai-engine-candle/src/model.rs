@@ -3,7 +3,6 @@
 use anyhow::Context;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
-use candle_transformers::models::quantized_llama::ModelWeights;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,8 +25,50 @@ pub fn should_stop(produced: usize, last_token: u32, eos: u32, params: &GenParam
     produced >= params.max_tokens || last_token == eos
 }
 
+/// Architectures whose tokenizer + quantized model candle supports here.
+/// Guarded explicitly: arches outside this set (e.g. gemma/SentencePiece,
+/// phi/custom-BPE) would silently produce garbage with our byte-level-BPE
+/// tokenizer reconstruction, so we reject them with a clear error instead.
+pub(crate) fn supported_arch(arch: &str) -> anyhow::Result<&'static str> {
+    match arch {
+        "llama" => Ok("llama"),
+        "qwen2" => Ok("qwen2"),
+        "qwen3" => Ok("qwen3"),
+        other => anyhow::bail!(
+            "candle-local: unsupported architecture '{other}' (supported: llama, qwen2, qwen3). \
+             Other architectures (gemma, phi, mistral, ...) need tokenizer work and are not yet validated."
+        ),
+    }
+}
+
+fn detect_supported_arch(content: &gguf_file::Content) -> anyhow::Result<&'static str> {
+    let arch = content
+        .metadata
+        .get("general.architecture")
+        .and_then(|v| v.to_string().ok())
+        .map(|s| s.as_str().to_owned())
+        .context("gguf missing general.architecture")?;
+    supported_arch(&arch)
+}
+
+enum CandleWeights {
+    Llama(candle_transformers::models::quantized_llama::ModelWeights),
+    Qwen2(candle_transformers::models::quantized_qwen2::ModelWeights),
+    Qwen3(candle_transformers::models::quantized_qwen3::ModelWeights),
+}
+
+impl CandleWeights {
+    fn forward(&mut self, x: &Tensor, pos: usize) -> candle_core::Result<Tensor> {
+        match self {
+            CandleWeights::Llama(m) => m.forward(x, pos),
+            CandleWeights::Qwen2(m) => m.forward(x, pos),
+            CandleWeights::Qwen3(m) => m.forward(x, pos),
+        }
+    }
+}
+
 pub struct CandleModel {
-    weights: ModelWeights,
+    weights: CandleWeights,
     tokenizer: Arc<HfTokenizer>,
     device: Device,
     eos_token_id: u32,
@@ -43,13 +84,44 @@ impl CandleModel {
             .with_context(|| format!("open {}", gguf_path.display()))?;
         let content = gguf_file::Content::read(&mut file)
             .map_err(|e| anyhow::anyhow!("read gguf {}: {e}", gguf_path.display()))?;
+
+        // Detect + validate architecture (ref) before consuming content.
+        let arch = detect_supported_arch(&content)?;
+
+        // Read eos token id (ref) before consuming content.
         let eos_token_id = content
             .metadata
             .get("tokenizer.ggml.eos_token_id")
             .and_then(|v| v.to_u32().ok())
             .context("gguf missing tokenizer.ggml.eos_token_id")?;
-        let weights = ModelWeights::from_gguf(content, &mut file, &device)
-            .map_err(|e| anyhow::anyhow!("ModelWeights::from_gguf: {e}"))?;
+
+        // Now consume content into the matching from_gguf variant.
+        let weights = match arch {
+            "llama" => {
+                let m = candle_transformers::models::quantized_llama::ModelWeights::from_gguf(
+                    content, &mut file, &device,
+                )
+                .map_err(|e| anyhow::anyhow!("ModelWeights::from_gguf (llama): {e}"))?;
+                CandleWeights::Llama(m)
+            }
+            "qwen2" => {
+                let m = candle_transformers::models::quantized_qwen2::ModelWeights::from_gguf(
+                    content, &mut file, &device,
+                )
+                .map_err(|e| anyhow::anyhow!("ModelWeights::from_gguf (qwen2): {e}"))?;
+                CandleWeights::Qwen2(m)
+            }
+            "qwen3" => {
+                let m = candle_transformers::models::quantized_qwen3::ModelWeights::from_gguf(
+                    content, &mut file, &device,
+                )
+                .map_err(|e| anyhow::anyhow!("ModelWeights::from_gguf (qwen3): {e}"))?;
+                CandleWeights::Qwen3(m)
+            }
+            // detect_supported_arch already rejected anything else; this is unreachable.
+            _ => unreachable!("detect_supported_arch should have rejected arch '{arch}'"),
+        };
+
         Ok(Self { weights, tokenizer, device, eos_token_id })
     }
 
@@ -122,5 +194,16 @@ mod tests {
         assert!(should_stop(5, 42, 42, &p));      // last==eos -> stop
         assert!(!should_stop(5, 7, 42, &p));      // under budget, not eos -> continue
         assert!(should_stop(100, 7, 42, &p));     // hit max_tokens -> stop
+    }
+
+    #[test]
+    fn supported_arch_allowlist() {
+        assert_eq!(supported_arch("llama").unwrap(), "llama");
+        assert_eq!(supported_arch("qwen2").unwrap(), "qwen2");
+        assert_eq!(supported_arch("qwen3").unwrap(), "qwen3");
+        assert!(supported_arch("gemma").is_err());
+        assert!(supported_arch("phi3").is_err());
+        assert!(supported_arch("mistral").is_err());
+        assert!(supported_arch("").is_err());
     }
 }
