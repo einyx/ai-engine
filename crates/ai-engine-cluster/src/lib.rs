@@ -7,6 +7,7 @@
 //! Implements `Provider` from `ai_engine_provider` against a cluster of
 //! nodes communicating over QUIC.
 
+pub mod discovery;
 pub mod capability;
 pub mod leader;
 pub mod partition;

@@ -31,6 +31,7 @@ thiserror.workspace = true
 tokio = { workspace = true }
 tracing.workspace = true
 uuid.workspace = true
+mdns-sd.workspace = true
 
 [dev-dependencies]
 burn = { workspace = true }
