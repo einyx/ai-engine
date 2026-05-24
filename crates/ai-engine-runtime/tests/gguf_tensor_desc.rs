@@ -53,3 +53,21 @@ fn rejects_unsupported_ggml_type() {
     let err = parse_tensor_desc(&bytes).unwrap_err().to_string();
     assert!(err.to_lowercase().contains("unsupported"));
 }
+
+#[test]
+fn parse_tensor_desc_accepts_q4_1_type_3() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1_u64.to_le_bytes()); // name len
+    bytes.push(b'x');
+    bytes.extend_from_slice(&1_u32.to_le_bytes()); // n_dims
+    bytes.extend_from_slice(&32_u64.to_le_bytes()); // shape[0]
+    bytes.extend_from_slice(&3_u32.to_le_bytes()); // ggml_type = Q4_1
+    bytes.extend_from_slice(&0_u64.to_le_bytes()); // offset
+
+    let (d, consumed) =
+        ai_engine_runtime::gguf::tensor_desc::parse_tensor_desc(&bytes).unwrap();
+    assert_eq!(d.name, "x");
+    assert_eq!(d.shape, vec![32]);
+    assert_eq!(d.ggml_type, ai_engine_runtime::gguf::tensor_desc::GgmlType::Q4_1);
+    assert_eq!(consumed, bytes.len());
+}

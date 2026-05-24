@@ -560,6 +560,14 @@ fn gguf_tensor_bytes(d: &TensorDesc) -> anyhow::Result<usize> {
             }
             Ok((total / block * bytes_per_block) as usize)
         }
+        GgmlType::Q4_1 => {
+            let block = crate::gguf::q4_1::Q4_1_BLOCK_SIZE as u64;
+            let bytes_per_block = crate::gguf::q4_1::Q4_1_BYTES_PER_BLOCK as u64;
+            if total % block != 0 {
+                anyhow::bail!("Q4_1 tensor `{}` not multiple of 32 elements", d.name);
+            }
+            Ok((total / block * bytes_per_block) as usize)
+        }
     }
 }
 
@@ -636,6 +644,7 @@ fn bytes_to_f32_vec_gguf(
         GgmlType::Q4_0 => {
             anyhow::bail!("Q4_0 cannot be loaded as dense; use the Q4Gguf path")
         }
+        GgmlType::Q4_1 => crate::gguf::q4_1::dequant_q4_1_tensor(bytes, expected_elements),
     }
 }
 
