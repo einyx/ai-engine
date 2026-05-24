@@ -475,16 +475,24 @@ pub fn load_gguf<B: Backend>(
                     device,
                 )?))
             }
-            _ => Ok(LinearWeight::Dense(load_dense_2d_gguf::<B>(
-                d, slice, device,
-            )?)),
+            // Non-Q4_0 dense types (Q4_1, Q6_K, F16, BF16, F32): dequantize and
+            // convert from GGUF's column-major [in, out] to row-major [in, out],
+            // then swap to [out, in] HF convention so that the caller's
+            // `ensure_math_order()` (which transposes Dense from [out,in] to
+            // [in,out]) produces the correct math-order weight.
+            _ => Ok(LinearWeight::Dense(
+                load_dense_2d_gguf::<B>(d, slice, device)?.swap_dims(0, 1),
+            )),
         }
     };
 
     let embedding = if hosts_embedding {
         let from_embed = load_2d("model.embed_tokens.weight");
         match from_embed {
-            Ok(t) => Some(t),
+            // GGUF stores `token_embd.weight` in math order [hidden, vocab]; the
+            // embedding table needs [vocab, hidden]. This mirrors the swap_dims
+            // applied in the tied-embedding fallback below.
+            Ok(t) => Some(t.swap_dims(0, 1)),
             Err(_) => {
                 // Tied-embedding fallback: only `output.weight` (lm_head) is
                 // present. GGUF stores it in math order `[hidden, vocab]`; the
