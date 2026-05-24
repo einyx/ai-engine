@@ -84,6 +84,14 @@ pub fn validate(cfg: &Config) -> anyhow::Result<()> {
                 );
             }
         }
+        if let Some(disc) = &cluster.discover {
+            if disc.expected_workers == 0 {
+                anyhow::bail!(
+                    "cluster `{}` discover.expected_workers must be > 0",
+                    cluster.id
+                );
+            }
+        }
     }
 
     // local-cluster providers must reference an existing cluster

@@ -139,6 +139,8 @@ pub struct Cluster {
     pub nodes: Vec<ClusterNode>,
     #[serde(default, rename = "partition_override")]
     pub partition_override: Vec<PartitionOverride>,
+    #[serde(default)]
+    pub discover: Option<ClusterDiscover>,
 }
 fn default_protocol_version() -> u16 {
     1
@@ -148,6 +150,16 @@ fn default_join_timeout() -> u64 {
 }
 fn default_heartbeat() -> u64 {
     5
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterDiscover {
+    pub expected_workers: usize,
+    #[serde(default = "default_discover_timeout")]
+    pub timeout_secs: u64,
+}
+fn default_discover_timeout() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize)]

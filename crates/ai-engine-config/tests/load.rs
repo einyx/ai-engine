@@ -426,3 +426,134 @@ fn defaults_applied() {
     assert_eq!(cfg.providers[0].timeout_secs, 120);
     assert!(cfg.providers[0].http2);
 }
+
+#[test]
+fn parses_cluster_discover_block() {
+    let toml = r#"
+[server]
+bind = "127.0.0.1:0"
+
+[auth]
+mode = "passthrough"
+
+[[cluster]]
+id = "home"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.model]
+id = "llama-3-70b"
+config_path = "/srv/models/llama-3-70b/config.json"
+weights_path = "/srv/models/llama-3-70b/model.safetensors"
+tokenizer_path = "/srv/models/llama-3-70b/tokenizer.json"
+
+[cluster.discover]
+expected_workers = 2
+timeout_secs = 30
+
+[[cluster.node]]
+id = "node-a"
+addr = "127.0.0.1:7700"
+cert_fingerprint = "sha256:abc123"
+backend = "cuda"
+
+[[provider]]
+id = "home-cluster"
+kind = "local-cluster"
+cluster = "home"
+
+[[route]]
+match = { model = "llama-3-70b" }
+provider = "home-cluster"
+
+[pipeline."/v1/chat/completions"]
+stages = ["auth", "model_route", "forward", "log"]
+"#;
+    let cfg = ai_engine_config::Config::from_str(toml).unwrap();
+    let cluster = &cfg.clusters[0];
+    let disc = cluster.discover.as_ref().expect("cluster.discover present");
+    assert_eq!(disc.expected_workers, 2);
+    assert_eq!(disc.timeout_secs, 30);
+}
+
+#[test]
+fn cluster_discover_defaults_timeout() {
+    let toml = r#"
+[server]
+bind = "127.0.0.1:0"
+[auth]
+mode = "passthrough"
+
+[[cluster]]
+id = "home"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.model]
+id = "m"
+config_path = "x"
+weights_path = "x"
+tokenizer_path = "x"
+
+[cluster.discover]
+expected_workers = 3
+
+[[cluster.node]]
+id = "node-a"
+addr = "127.0.0.1:7700"
+cert_fingerprint = "sha256:abc"
+backend = "cpu"
+
+[[provider]]
+id = "p"
+kind = "local-cluster"
+cluster = "home"
+
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let cfg = ai_engine_config::Config::from_str(toml).unwrap();
+    let disc = cfg.clusters[0].discover.as_ref().unwrap();
+    assert_eq!(disc.expected_workers, 3);
+    assert_eq!(disc.timeout_secs, 30); // default
+}
+
+#[test]
+fn cluster_discover_with_zero_workers_rejected() {
+    let toml = r#"
+[server]
+bind = "127.0.0.1:0"
+[auth]
+mode = "passthrough"
+
+[[cluster]]
+id = "home"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.model]
+id = "m"
+config_path = "x"
+weights_path = "x"
+tokenizer_path = "x"
+
+[cluster.discover]
+expected_workers = 0
+
+[[cluster.node]]
+id = "node-a"
+addr = "127.0.0.1:7700"
+cert_fingerprint = "sha256:abc"
+backend = "cpu"
+
+[[provider]]
+id = "p"
+kind = "local-cluster"
+cluster = "home"
+
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let err = ai_engine_config::Config::from_str(toml).unwrap_err().to_string();
+    assert!(err.to_lowercase().contains("expected_workers"), "got: {err}");
+}
