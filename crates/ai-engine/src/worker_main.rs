@@ -6,8 +6,11 @@
 //! layers, awaiting activations from the cluster leader.
 
 use ai_engine_cluster::{
-    capability::BackendKind, tls::load_or_generate_node_identity,
-    transport::quic::server_endpoint, worker::run_worker_full,
+    capability::BackendKind,
+    discovery::{Announcer, TxtRecords},
+    tls::load_or_generate_node_identity,
+    transport::quic::server_endpoint,
+    worker::run_worker_full,
 };
 use ai_engine_runtime::config::ModelConfig;
 
@@ -40,6 +43,22 @@ pub async fn run_worker(
 
     let bind: std::net::SocketAddr = me.addr.parse()?;
     let endpoint = server_endpoint(&identity, bind)?;
+
+    // mDNS announcement — runs alongside the QUIC server. Bound to a local
+    // `_announcer` to keep the daemon alive for the lifetime of this worker.
+    let txt = TxtRecords {
+        cluster_id: cluster_id.into(),
+        node_id: node_id.into(),
+        role: "worker".into(),
+        protocol_version: 1,
+        fingerprint: identity.fingerprint.clone(),
+        backend: me.backend.clone(),
+    };
+    let ann_ip: std::net::IpAddr = bind.ip();
+    let ann_host = format!("{}.local.", node_id);
+    let _announcer = Announcer::register(ann_ip, bind.port(), &ann_host, txt)?;
+    tracing::info!(node_id = %node_id, "ai-engine worker announcing on mDNS");
+
     let model_cfg = ModelConfig::from_file(std::path::Path::new(&cluster.model.config_path))?;
     let model_path: std::path::PathBuf = (&cluster.model.weights_path).into();
 

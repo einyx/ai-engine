@@ -109,22 +109,64 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
                 .find(|c| &c.id == cluster_id)
                 .expect("resolve_role guarantees the cluster exists");
 
-            let worker_endpoints: Vec<ai_engine_cluster::leader::WorkerEndpoint> = cluster_cfg
-                .nodes
-                .iter()
-                .filter(|n| n.id != cluster_cfg.leader)
-                .map(|n| {
-                    let addr = n
-                        .addr
-                        .parse()
-                        .map_err(|e| anyhow::anyhow!("cluster `{}` node `{}` addr `{}` invalid: {e}", cluster_id, n.id, n.addr));
-                    addr.map(|addr| ai_engine_cluster::leader::WorkerEndpoint {
-                        node_id: n.id.clone(),
-                        addr,
-                        fingerprint: n.cert_fingerprint.clone(),
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let worker_endpoints: Vec<ai_engine_cluster::leader::WorkerEndpoint> =
+                if let Some(disc) = &cluster_cfg.discover {
+                    // mDNS discovery path: ignore the static `cert_fingerprint`
+                    // fields and trust whatever fingerprints workers advertise.
+                    let timeout = std::time::Duration::from_secs(disc.timeout_secs);
+                    tracing::info!(
+                        cluster_id = %cluster_id,
+                        expected = disc.expected_workers,
+                        timeout_secs = disc.timeout_secs,
+                        "discovering workers via mDNS"
+                    );
+                    eprintln!(
+                        "ai-engine leader `{}` discovering workers via mDNS (expected={}, timeout={}s)",
+                        cluster_id, disc.expected_workers, disc.timeout_secs
+                    );
+                    let discovered = ai_engine_cluster::discovery::discover_workers(
+                        cluster_id,
+                        disc.expected_workers,
+                        timeout,
+                    )
+                    .await?;
+                    if discovered.is_empty() {
+                        anyhow::bail!(
+                            "mDNS discovery yielded zero workers for cluster `{cluster_id}` within {} sec",
+                            disc.timeout_secs
+                        );
+                    }
+                    tracing::info!(
+                        cluster_id = %cluster_id,
+                        found = discovered.len(),
+                        "mDNS discovery complete"
+                    );
+                    discovered
+                        .into_iter()
+                        .map(ai_engine_cluster::leader::WorkerEndpoint::from_discovered)
+                        .collect()
+                } else {
+                    cluster_cfg
+                        .nodes
+                        .iter()
+                        .filter(|n| n.id != cluster_cfg.leader)
+                        .map(|n| {
+                            let addr = n.addr.parse().map_err(|e| {
+                                anyhow::anyhow!(
+                                    "cluster `{}` node `{}` addr `{}` invalid: {e}",
+                                    cluster_id,
+                                    n.id,
+                                    n.addr
+                                )
+                            });
+                            addr.map(|addr| ai_engine_cluster::leader::WorkerEndpoint {
+                                node_id: n.id.clone(),
+                                addr,
+                                fingerprint: n.cert_fingerprint.clone(),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                };
 
             let model_cfg = ai_engine_runtime::config::ModelConfig::from_file(
                 std::path::Path::new(&cluster_cfg.model.config_path),
