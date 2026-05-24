@@ -617,3 +617,39 @@ Known limitations:
   could cut another ~30-50%. Deferred.
 - OpenBLAS is the only BLAS backend tested. `blas-accelerate` (macOS)
   and `blas-netlib` should work but aren't verified.
+
+### v0.3.0-alpha.9 — 2× more decode throughput via sgemv
+
+ai-engine v0.3.0-alpha.9 routes seq=1 decode-time matmul through BLAS
+`sgemv` (matrix-vector) instead of `sgemm` (matrix-matrix), eliminating
+GEMM packing and thread-pool dispatch overhead that dominated alpha.8's
+profile. Real Llama-3.2-1B Q4_0 GGUF, single-process CPU:
+
+| | v0.3.0-alpha.8 | v0.3.0-alpha.9 |
+|---|---|---|
+| tokens/sec | 0.172 | **0.338** |
+| avg per step | ~5.8 s | ~2.96 s |
+| profile top symbol | OpenBLAS thread pool (96.9%) | sgemv kernel |
+
+Cumulative since alpha.7 (the inference-correctness milestone):
+**0.069 → 0.338 tok/s = 4.9×.**
+
+Internals:
+- `LinearWeight::Dense` now holds a small struct with both the burn
+  `Tensor<B, 2>` and a `OnceLock<Arc<ArcArray<f32, Ix2>>>` ndarray cache,
+  mirroring the cache already on `Q4GgufTensor`. The ndarray view is
+  used by the GEMV fast path; the burn tensor is kept for the GEMM
+  fallback path on multi-token inputs.
+- `LinearWeight::matmul` detects `seq == 1` and calls `matmul_gemv`,
+  which invokes `ndarray::linalg::general_mat_vec_mul` (BLAS `sgemv`).
+- Model construction pre-warms each weight's GEMV cache at load time
+  via `preload_gemv_cache`, so the first decode step doesn't pay the
+  dequant+copy cost.
+
+Known limitations:
+- The GEMV fast path is gated on the `backend-cpu` feature; GPU backends
+  (burn-wgpu, burn-cuda) continue to use the generic burn matmul path.
+- For prefill (seq > 1) the GEMM path is unchanged — same alpha.8 cost.
+  For long prompts, prefill still dominates total latency.
+- Per-call BLAS dispatch overhead is now visible; further wins likely
+  require batching multiple layers' matmuls or moving to a GPU backend.
