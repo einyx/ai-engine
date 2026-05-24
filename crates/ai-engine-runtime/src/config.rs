@@ -58,6 +58,103 @@ impl ModelConfig {
     pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
         std::fs::read_to_string(path)?.parse()
     }
+
+    /// Extract a `ModelConfig` from a GGUF file's metadata. Targets Llama-3-style
+    /// `llama.*` keys. Returns an error if the file isn't a Llama-family GGUF
+    /// or required metadata is missing.
+    pub fn from_gguf_file(path: &std::path::Path) -> anyhow::Result<Self> {
+        let m = crate::gguf::read_metadata_only(path)?;
+        Self::from_gguf_metadata(&m)
+    }
+
+    /// Extract a `ModelConfig` from a pre-parsed GGUF metadata map.
+    pub fn from_gguf_metadata(
+        m: &std::collections::HashMap<String, crate::gguf::GgufValue>,
+    ) -> anyhow::Result<Self> {
+        use crate::gguf::metadata::GgufArray;
+        use crate::gguf::GgufValue;
+
+        let arch = match m.get("general.architecture") {
+            Some(GgufValue::String(s)) => s.as_str(),
+            Some(other) => anyhow::bail!("general.architecture wrong type: {other:?}"),
+            None => anyhow::bail!("general.architecture missing in GGUF metadata"),
+        };
+        let family = match arch {
+            "llama" => ModelFamily::Llama3,
+            other => anyhow::bail!(
+                "GGUF architecture `{other}` not supported in Plan 10 (only `llama`)"
+            ),
+        };
+
+        let n_layers = gguf_read_u32(m, "llama.block_count")? as usize;
+        let hidden_size = gguf_read_u32(m, "llama.embedding_length")? as usize;
+        let n_heads = gguf_read_u32(m, "llama.attention.head_count")? as usize;
+        let n_kv_heads = gguf_read_u32(m, "llama.attention.head_count_kv")? as usize;
+        let intermediate_size = gguf_read_u32(m, "llama.feed_forward_length")? as usize;
+        let max_position_embeddings = gguf_read_u32(m, "llama.context_length")? as usize;
+        let rms_norm_eps = gguf_read_f32(m, "llama.attention.layer_norm_rms_epsilon")?;
+        let rope_theta = gguf_read_f32(m, "llama.rope.freq_base")?;
+        let head_dim = hidden_size / n_heads;
+
+        // vocab_size from tokenizer.ggml.tokens array length; fall back to
+        // llama.vocab_size u32 key.
+        let vocab_size = match m.get("tokenizer.ggml.tokens") {
+            Some(GgufValue::Array(GgufArray::String(v))) => v.len(),
+            _ => match m.get("llama.vocab_size") {
+                Some(GgufValue::U32(n)) => *n as usize,
+                _ => anyhow::bail!(
+                    "GGUF missing both tokenizer.ggml.tokens array and llama.vocab_size"
+                ),
+            },
+        };
+
+        // tie_word_embeddings: GGUF has no explicit key. Default to true (the
+        // most common case — Llama-3 family ties its embeddings). Callers who
+        // need precise tie-ness for non-default checkpoints can override via TOML.
+        let tie_word_embeddings = true;
+
+        Ok(Self {
+            hidden_size,
+            intermediate_size,
+            n_layers,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            vocab_size,
+            max_position_embeddings,
+            rope_theta,
+            rms_norm_eps,
+            tie_word_embeddings,
+            family,
+        })
+    }
+}
+
+fn gguf_read_u32(
+    m: &std::collections::HashMap<String, crate::gguf::GgufValue>,
+    key: &str,
+) -> anyhow::Result<u32> {
+    use crate::gguf::GgufValue;
+    match m.get(key) {
+        Some(GgufValue::U32(n)) => Ok(*n),
+        Some(GgufValue::U64(n)) => Ok(*n as u32),
+        Some(GgufValue::I32(n)) => Ok(*n as u32),
+        Some(other) => anyhow::bail!("GGUF key `{key}` wrong type for u32: {other:?}"),
+        None => anyhow::bail!("GGUF key `{key}` missing"),
+    }
+}
+
+fn gguf_read_f32(
+    m: &std::collections::HashMap<String, crate::gguf::GgufValue>,
+    key: &str,
+) -> anyhow::Result<f32> {
+    use crate::gguf::GgufValue;
+    match m.get(key) {
+        Some(GgufValue::F32(f)) => Ok(*f),
+        Some(GgufValue::F64(f)) => Ok(*f as f32),
+        Some(other) => anyhow::bail!("GGUF key `{key}` wrong type for f32: {other:?}"),
+        None => anyhow::bail!("GGUF key `{key}` missing"),
+    }
 }
 
 impl std::str::FromStr for ModelConfig {

@@ -142,6 +142,7 @@ write_kv_u32(meta, "llama.context_length", cfg["max_position_embeddings"]); meta
 write_kv_f32(meta, "llama.attention.layer_norm_rms_epsilon", cfg["rms_norm_eps"]); meta_count += 1
 rope_theta = cfg.get("rope_theta", cfg.get("rope_parameters", {}).get("rope_theta", 10000.0))
 write_kv_f32(meta, "llama.rope.freq_base", float(rope_theta)); meta_count += 1
+write_kv_u32(meta, "llama.vocab_size", cfg["vocab_size"]); meta_count += 1
 
 # Build tensors
 tensor_descs = bytearray()
