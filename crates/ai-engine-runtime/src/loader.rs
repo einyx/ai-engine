@@ -108,7 +108,7 @@ pub fn load_range<B: Backend>(
             q4_scale_id,
             device,
         )? {
-            LinearWeight::Dense(t) => Ok(t),
+            LinearWeight::Dense(d) => Ok(d.tensor),
             LinearWeight::Quantized(q) => Ok(q.dequantize()),
             // Q4 lm_head is stored pre-transposed in math order [hidden, vocab].
             // The embedding table is [vocab, hidden]; swap dims to recover it.
@@ -378,7 +378,7 @@ fn load_linear_weight<B: Backend>(
         _ => {
             let f32_data = bytes_to_f32_vec(view.data(), view.dtype())
                 .with_context(|| format!("decode `{name}`"))?;
-            Ok(LinearWeight::Dense(Tensor::<B, 2>::from_data(
+            Ok(LinearWeight::dense(Tensor::<B, 2>::from_data(
                 TensorData::new(f32_data, shape2),
                 device,
             )))
@@ -410,7 +410,7 @@ fn unpermute_qk<B: Backend>(
     // Dequantize to Dense — the permutation requires element-level reshaping.
     let t: Tensor<B, 2> = match w {
         LinearWeight::Q4Gguf(q) => q.dequantize(),
-        LinearWeight::Dense(t) => t,
+        LinearWeight::Dense(d) => d.tensor,
         LinearWeight::Quantized(q) => q.dequantize(),
         LinearWeight::Q4(q) => q.dequantize(),
     };
@@ -432,7 +432,7 @@ fn unpermute_qk<B: Backend>(
         .swap_dims(2, 3)
         .reshape([hidden, n_heads_or_kv * head_dim]);
     // Return in HF [out, in] order so ensure_math_order() yields [in, out].
-    LinearWeight::Dense(unpermuted.swap_dims(0, 1))
+    LinearWeight::dense(unpermuted.swap_dims(0, 1))
 }
 
 /// Alignment for the tensor-data section of a GGUF file. The format spec
@@ -529,7 +529,7 @@ pub fn load_gguf<B: Backend>(
             // then swap to [out, in] HF convention so that the caller's
             // `ensure_math_order()` (which transposes Dense from [out,in] to
             // [in,out]) produces the correct math-order weight.
-            _ => Ok(LinearWeight::Dense(
+            _ => Ok(LinearWeight::dense(
                 load_dense_2d_gguf::<B>(d, slice, device)?.swap_dims(0, 1),
             )),
         }

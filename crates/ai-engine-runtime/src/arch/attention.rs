@@ -95,10 +95,10 @@ impl<B: Backend> Attention<B> {
         );
         let rope = RotaryEmbedding::<B>::new(head_dim, max_seq, rope_theta, device);
         Self::new(
-            LinearWeight::Dense(q_proj),
-            LinearWeight::Dense(k_proj),
-            LinearWeight::Dense(v_proj),
-            LinearWeight::Dense(o_proj),
+            LinearWeight::dense(q_proj),
+            LinearWeight::dense(k_proj),
+            LinearWeight::dense(v_proj),
+            LinearWeight::dense(o_proj),
             rope,
             n_heads,
             n_kv_heads,

@@ -17,7 +17,7 @@ fn q4_linear_matmul_approximates_dense() {
     let x_data: Vec<f32> = (0..32).map(|i| ((i as f32) * 0.1).cos()).collect();
     let x = Tensor::<B, 3>::from_data(TensorData::new(x_data, [1, 1, 32]), &dev);
 
-    let dense = LinearWeight::Dense(w.clone());
+    let dense = LinearWeight::dense(w.clone());
     let q4 = LinearWeight::Q4(Q4Tensor::<B>::quantize_from(w));
 
     let out_dense: Vec<f32> = dense.matmul(x.clone()).into_data().to_vec().unwrap();

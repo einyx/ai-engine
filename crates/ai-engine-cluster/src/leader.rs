@@ -415,7 +415,7 @@ where
         cfg.rms_norm_eps,
     );
     let output_lw: LinearWeight<B> = if cfg.tie_word_embeddings {
-        LinearWeight::Dense(embed_tensor.swap_dims(0, 1))
+        LinearWeight::dense(embed_tensor.swap_dims(0, 1))
     } else {
         weights
             .output_proj

@@ -20,6 +20,9 @@ use half::f16;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
+#[cfg(feature = "backend-cpu")]
+use {ndarray::{ArcArray, Array, Ix2}, std::sync::Arc};
+
 pub const Q4_0_BLOCK_SIZE: usize = 32;
 pub const Q4_0_BYTES_PER_BLOCK: usize = 18;
 
@@ -29,6 +32,11 @@ pub struct Q4GgufTensor<B: Backend> {
     device: B::Device,
     _marker: PhantomData<B>,
     cached_dense: OnceLock<Tensor<B, 2>>,
+    /// CPU-backend GEMV cache: the dequantized weight as a contiguous
+    /// ndarray ArcArray<f32, Ix2> (shape `[in, out]`).  Used by
+    /// `LinearWeight::matmul_gemv` for seq=1 decode.
+    #[cfg(feature = "backend-cpu")]
+    pub(crate) cached_ndarray: OnceLock<Arc<ArcArray<f32, Ix2>>>,
 }
 
 impl<B: Backend> Q4GgufTensor<B> {
@@ -62,6 +70,8 @@ impl<B: Backend> Q4GgufTensor<B> {
             device: device.clone(),
             _marker: PhantomData,
             cached_dense: OnceLock::new(),
+            #[cfg(feature = "backend-cpu")]
+            cached_ndarray: OnceLock::new(),
         })
     }
 
@@ -109,5 +119,29 @@ impl<B: Backend> Q4GgufTensor<B> {
     /// removes that overhead entirely after the first decode step.
     pub fn dequantize_cached(&self) -> Tensor<B, 2> {
         self.cached_dense.get_or_init(|| self.dequantize()).clone()
+    }
+
+    /// Return (or build) the contiguous ndarray weight for BLAS sgemv dispatch.
+    ///
+    /// On the first call, dequantizes the weight (using the burn cache if
+    /// already populated) and copies the f32 data into an ndarray ArcArray.
+    /// Subsequent calls return a cheap Arc clone.
+    #[cfg(feature = "backend-cpu")]
+    pub(crate) fn ndarray_weight(&self) -> Arc<ArcArray<f32, Ix2>> {
+        self.cached_ndarray
+            .get_or_init(|| {
+                let [in_dim, out_dim] = self.shape;
+                // Reuse the burn cache if available; otherwise dequantize fresh.
+                let floats: Vec<f32> = self
+                    .dequantize_cached()
+                    .into_data()
+                    .to_vec()
+                    .expect("Q4Gguf dequant must be f32");
+                let arr = Array::from_shape_vec([in_dim, out_dim], floats)
+                    .expect("shape/data mismatch in ndarray weight cache")
+                    .into_shared();
+                Arc::new(arr)
+            })
+            .clone()
     }
 }

@@ -15,7 +15,7 @@ fn dense_linear_matmul_matches_raw_matmul() {
         TensorData::new(vec![1.0_f32, 1.0], [1, 1, 2]),
         &dev,
     );
-    let lw = LinearWeight::Dense(w.clone());
+    let lw = LinearWeight::dense(w.clone());
     let out_via_lw = lw.matmul(x.clone());
     let out_direct = x.matmul(w.unsqueeze());
     let a: Vec<f32> = out_via_lw.into_data().to_vec().unwrap();
@@ -34,7 +34,7 @@ fn quantized_linear_matmul_approximates_dense() {
         &dev,
     );
 
-    let dense = LinearWeight::Dense(w.clone());
+    let dense = LinearWeight::dense(w.clone());
     let qw = QuantizedTensor::<B>::quantize_from(w);
     let quant = LinearWeight::Quantized(qw);
 

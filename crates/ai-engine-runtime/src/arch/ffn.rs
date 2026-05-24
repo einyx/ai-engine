@@ -40,9 +40,9 @@ impl<B: Backend> SwiGluFfn<B> {
             device,
         );
         Self {
-            gate_proj: LinearWeight::Dense(gate_proj),
-            up_proj: LinearWeight::Dense(up_proj),
-            down_proj: LinearWeight::Dense(down_proj),
+            gate_proj: LinearWeight::dense(gate_proj),
+            up_proj: LinearWeight::dense(up_proj),
+            down_proj: LinearWeight::dense(down_proj),
         }
     }
 

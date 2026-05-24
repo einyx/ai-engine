@@ -82,7 +82,7 @@ impl<B: Backend> Model<B> {
                 device,
             )
         };
-        let output = OutputProjection::new(LinearWeight::Dense(output_w));
+        let output = OutputProjection::new(LinearWeight::dense(output_w));
 
         Self {
             embedding,
@@ -128,10 +128,11 @@ impl<B: Backend> Model<B> {
         // Untied case: `weights.output_proj` is the lm_head tensor, which HF
         // serializes as `[vocab, hidden]`. Same transpose applies.
         let output_lw: LinearWeight<B> = match (cfg.tie_word_embeddings, weights.output_proj) {
-            (true, _) => LinearWeight::Dense(embed_tensor.swap_dims(0, 1)),
+            (true, _) => LinearWeight::dense(embed_tensor.swap_dims(0, 1)),
             (false, Some(w)) => w.ensure_math_order(),
             (false, None) => anyhow::bail!("untied output projection missing"),
         };
+        output_lw.preload_gemv_cache();
         let output = OutputProjection::new(output_lw);
 
         if weights.layers.len() != cfg.n_layers {
@@ -155,21 +156,35 @@ impl<B: Backend> Model<B> {
             // HF stores Dense/Q8 projections as [out, in] and Q4 projections
             // pre-transposed in math order [in, out]. `ensure_math_order`
             // dispatches: swap_dims for Dense/Q8, no-op for Q4.
+            let q = layer.q_proj.ensure_math_order();
+            let k = layer.k_proj.ensure_math_order();
+            let v = layer.v_proj.ensure_math_order();
+            let o = layer.o_proj.ensure_math_order();
+            let ffn_gate = layer.ffn_gate.ensure_math_order();
+            let ffn_up = layer.ffn_up.ensure_math_order();
+            let ffn_down = layer.ffn_down.ensure_math_order();
+
+            // Pre-warm the GEMV ndarray cache for each weight so that the
+            // first decode step doesn't pay the dequant+copy cost.
+            q.preload_gemv_cache();
+            k.preload_gemv_cache();
+            v.preload_gemv_cache();
+            o.preload_gemv_cache();
+            ffn_gate.preload_gemv_cache();
+            ffn_up.preload_gemv_cache();
+            ffn_down.preload_gemv_cache();
+
             let attn = Attention::new(
-                layer.q_proj.ensure_math_order(),
-                layer.k_proj.ensure_math_order(),
-                layer.v_proj.ensure_math_order(),
-                layer.o_proj.ensure_math_order(),
+                q,
+                k,
+                v,
+                o,
                 rope,
                 cfg.n_heads,
                 cfg.n_kv_heads,
                 cfg.head_dim,
             );
-            let ffn = SwiGluFfn::new(
-                layer.ffn_gate.ensure_math_order(),
-                layer.ffn_up.ensure_math_order(),
-                layer.ffn_down.ensure_math_order(),
-            );
+            let ffn = SwiGluFfn::new(ffn_gate, ffn_up, ffn_down);
             blocks.push(DecoderBlock {
                 attn_norm,
                 attn,

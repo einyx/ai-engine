@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["backend-cpu", "backend-wgpu"]
-backend-cpu  = ["dep:burn-ndarray"]
+backend-cpu  = ["dep:burn-ndarray", "dep:ndarray"]
 backend-cuda = ["dep:burn-cuda"]
 backend-wgpu = ["dep:burn-wgpu"]
 backend-metal = ["backend-wgpu"]
@@ -20,6 +20,7 @@ burn = { workspace = true, features = ["std"] }
 burn-ndarray = { workspace = true, optional = true }
 burn-cuda    = { workspace = true, optional = true }
 burn-wgpu    = { workspace = true, optional = true }
+ndarray = { version = "0.17", features = ["blas"], optional = true }
 half.workspace = true
 memmap2.workspace = true
 safetensors.workspace = true

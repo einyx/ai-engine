@@ -224,6 +224,7 @@ dependencies = [
  "bytemuck",
  "half",
  "memmap2",
+ "ndarray 0.17.2",
  "openblas-src",
  "rand 0.8.6",
  "safetensors 0.4.5",
