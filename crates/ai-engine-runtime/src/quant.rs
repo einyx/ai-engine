@@ -78,4 +78,28 @@ impl<B: Backend> QuantizedTensor<B> {
         let f32_values: Vec<f32> = self.packed.iter().map(|&q| (q as f32) * self.scale).collect();
         Tensor::<B, 2>::from_data(TensorData::new(f32_values, self.shape), &self.device)
     }
+
+    /// Transpose this 2-D quantized tensor directly on the int8 buffer.
+    ///
+    /// Per-tensor symmetric Q8 has a single scalar `scale`, so transposition
+    /// is exactly lossless: only the element ordering changes; the scale and
+    /// each int8 value are preserved. This avoids the
+    /// dequantize → swap_dims → requantize round-trip, which would re-round
+    /// each value through Q8 and accumulate extra error.
+    pub fn transpose_2d(&self) -> Self {
+        let [r, c] = self.shape;
+        let mut packed = vec![0_i8; r * c];
+        for i in 0..r {
+            for j in 0..c {
+                packed[j * r + i] = self.packed[i * c + j];
+            }
+        }
+        Self {
+            packed,
+            scale: self.scale,
+            shape: [c, r],
+            _marker: PhantomData,
+            device: self.device.clone(),
+        }
+    }
 }

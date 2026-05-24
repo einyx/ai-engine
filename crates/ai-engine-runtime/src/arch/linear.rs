@@ -33,15 +33,18 @@ impl<B: Backend> LinearWeight<B> {
     /// expects.
     ///
     /// For the Dense variant this is just `Tensor::swap_dims`. For the
-    /// Quantized variant we dequantize, swap, and requantize — losing a
-    /// tiny bit of precision per transpose. Acceptable because this happens
-    /// once per load.
+    /// Quantized variant with the only supported 2-D axis pair `(0, 1)`
+    /// we transpose directly on the int8 buffer — exactly lossless under
+    /// per-tensor symmetric Q8 because the scale is shape-invariant.
     pub fn swap_dims(self, a: usize, b: usize) -> Self {
         match self {
             Self::Dense(t) => Self::Dense(t.swap_dims(a, b)),
             Self::Quantized(q) => {
-                let dq = q.dequantize().swap_dims(a, b);
-                Self::Quantized(QuantizedTensor::quantize_from(dq))
+                assert!(
+                    (a == 0 && b == 1) || (a == 1 && b == 0),
+                    "quantized swap_dims only supports 2-D transpose (0,1)"
+                );
+                Self::Quantized(q.transpose_2d())
             }
         }
     }
