@@ -71,3 +71,20 @@ fn parse_tensor_desc_accepts_q4_1_type_3() {
     assert_eq!(d.ggml_type, ai_engine_runtime::gguf::tensor_desc::GgmlType::Q4_1);
     assert_eq!(consumed, bytes.len());
 }
+
+#[test]
+fn parse_tensor_desc_accepts_q6_k_type_14() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1_u64.to_le_bytes()); // name len
+    bytes.push(b'e');
+    bytes.extend_from_slice(&1_u32.to_le_bytes()); // n_dims
+    bytes.extend_from_slice(&256_u64.to_le_bytes()); // shape[0]
+    bytes.extend_from_slice(&14_u32.to_le_bytes()); // ggml_type = Q6_K
+    bytes.extend_from_slice(&0_u64.to_le_bytes()); // offset
+
+    let (d, consumed) =
+        ai_engine_runtime::gguf::tensor_desc::parse_tensor_desc(&bytes).unwrap();
+    assert_eq!(d.name, "e");
+    assert_eq!(d.ggml_type, ai_engine_runtime::gguf::tensor_desc::GgmlType::Q6_K);
+    assert_eq!(consumed, bytes.len());
+}

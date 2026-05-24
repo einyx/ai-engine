@@ -7,6 +7,7 @@ pub mod metadata;
 pub mod tensor_desc;
 pub mod q4_0;
 pub mod q4_1;
+pub mod q6_k;
 
 pub use header::{parse_header, GgufHeader};
 pub use metadata::GgufValue;

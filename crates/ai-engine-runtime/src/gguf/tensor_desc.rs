@@ -9,6 +9,7 @@ pub enum GgmlType {
     F16 = 1,
     Q4_0 = 2,
     Q4_1 = 3,
+    Q6_K = 14,
     BF16 = 30,
 }
 
@@ -50,9 +51,10 @@ pub fn parse_tensor_desc(bytes: &[u8]) -> anyhow::Result<(TensorDesc, usize)> {
         1 => GgmlType::F16,
         2 => GgmlType::Q4_0,
         3 => GgmlType::Q4_1,
+        14 => GgmlType::Q6_K,
         30 => GgmlType::BF16,
         other => anyhow::bail!(
-            "unsupported ggml_type {other} (supported: F32=0, F16=1, Q4_0=2, Q4_1=3, BF16=30)"
+            "unsupported ggml_type {other} (supported: F32=0, F16=1, Q4_0=2, Q4_1=3, Q6_K=14, BF16=30)"
         ),
     };
     cursor += 4;
