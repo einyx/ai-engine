@@ -129,7 +129,7 @@ impl<B: Backend> Model<B> {
         // serializes as `[vocab, hidden]`. Same transpose applies.
         let output_lw: LinearWeight<B> = match (cfg.tie_word_embeddings, weights.output_proj) {
             (true, _) => LinearWeight::Dense(embed_tensor.swap_dims(0, 1)),
-            (false, Some(w)) => w.swap_dims(0, 1),
+            (false, Some(w)) => w.ensure_math_order(),
             (false, None) => anyhow::bail!("untied output projection missing"),
         };
         let output = OutputProjection::new(output_lw);
@@ -152,22 +152,23 @@ impl<B: Backend> Model<B> {
                 cfg.rope_theta,
                 device,
             );
-            // HF stores each projection as [out, in]; transpose to [in, out].
-            // LinearWeight::swap_dims handles both Dense and Quantized variants.
+            // HF stores Dense/Q8 projections as [out, in] and Q4 projections
+            // pre-transposed in math order [in, out]. `ensure_math_order`
+            // dispatches: swap_dims for Dense/Q8, no-op for Q4.
             let attn = Attention::new(
-                layer.q_proj.swap_dims(0, 1),
-                layer.k_proj.swap_dims(0, 1),
-                layer.v_proj.swap_dims(0, 1),
-                layer.o_proj.swap_dims(0, 1),
+                layer.q_proj.ensure_math_order(),
+                layer.k_proj.ensure_math_order(),
+                layer.v_proj.ensure_math_order(),
+                layer.o_proj.ensure_math_order(),
                 rope,
                 cfg.n_heads,
                 cfg.n_kv_heads,
                 cfg.head_dim,
             );
             let ffn = SwiGluFfn::new(
-                layer.ffn_gate.swap_dims(0, 1),
-                layer.ffn_up.swap_dims(0, 1),
-                layer.ffn_down.swap_dims(0, 1),
+                layer.ffn_gate.ensure_math_order(),
+                layer.ffn_up.ensure_math_order(),
+                layer.ffn_down.ensure_math_order(),
             );
             blocks.push(DecoderBlock {
                 attn_norm,

@@ -62,4 +62,21 @@ impl<B: Backend> LinearWeight<B> {
             }
         }
     }
+
+    /// Ensure the weight is in math order `[in, out]`.
+    ///
+    /// Q4 fixtures store weights pre-transposed (already in `[in, out]` math
+    /// order, so the loader never has to call `swap_dims` and re-quantize).
+    /// Dense and Q8 fixtures follow HF's `[out, in]` layout and need the
+    /// `swap_dims(0, 1)` flip at load time.
+    ///
+    /// Callers that previously called `<weight>.swap_dims(0, 1)` immediately
+    /// after loading should use this helper instead — it dispatches correctly
+    /// across all three variants.
+    pub fn ensure_math_order(self) -> Self {
+        match self {
+            Self::Q4(_) => self,
+            _ => self.swap_dims(0, 1),
+        }
+    }
 }

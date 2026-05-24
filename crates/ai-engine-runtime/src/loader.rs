@@ -9,7 +9,7 @@
 use crate::arch::linear::LinearWeight;
 use crate::config::ModelConfig;
 use crate::name_map::{TensorId, WeightNameMap};
-use crate::quant::QuantizedTensor;
+use crate::quant::{Q4Tensor, Q4_GROUP_SIZE, QuantizedTensor};
 use anyhow::Context;
 use burn::tensor::{backend::Backend, Tensor, TensorData};
 use memmap2::Mmap;
@@ -86,16 +86,30 @@ pub fn load_range<B: Backend>(
         ))
     };
 
-    // Load a 2D tensor, transparently dequantizing if it's Q8. Used for the
-    // embedding fallback when a tied-weights fixture stores only `lm_head` as
-    // int8.
+    // Load a 2D tensor, transparently dequantizing if it's Q8 or Q4. Used for
+    // the embedding fallback when a tied-weights fixture stores only `lm_head`
+    // in quantized form. For Q4, the on-disk weight is already in math order
+    // `[in, out]` (= `[hidden, vocab]`); the embedding expects `[vocab, hidden]`
+    // so we transpose after dequantizing.
     let load_2d_dequantizing = |weight_id: TensorId,
-                                scale_id: TensorId|
+                                scale_id: TensorId,
+                                q4_weight_id: TensorId,
+                                q4_scale_id: TensorId|
      -> anyhow::Result<Tensor<B, 2>> {
-        match load_linear_weight::<B>(&st, &nm, weight_id, scale_id, device)? {
+        match load_linear_weight::<B>(
+            &st,
+            &nm,
+            weight_id,
+            scale_id,
+            q4_weight_id,
+            q4_scale_id,
+            device,
+        )? {
             LinearWeight::Dense(t) => Ok(t),
             LinearWeight::Quantized(q) => Ok(q.dequantize()),
-            LinearWeight::Q4(q) => Ok(q.dequantize()),
+            // Q4 lm_head is stored pre-transposed in math order [hidden, vocab].
+            // The embedding table is [vocab, hidden]; swap dims to recover it.
+            LinearWeight::Q4(q) => Ok(q.dequantize().swap_dims(0, 1)),
         }
     };
 
@@ -114,6 +128,8 @@ pub fn load_range<B: Backend>(
                         load_2d_dequantizing(
                             TensorId::OutputProjection,
                             TensorId::OutputProjectionScale,
+                            TensorId::OutputProjectionQ4Weight,
+                            TensorId::OutputProjectionQ4Scale,
                         )
                         .with_context(|| {
                             "tied embeddings: neither embed_tokens nor lm_head present"
@@ -138,6 +154,8 @@ pub fn load_range<B: Backend>(
                 &nm,
                 TensorId::LayerQProj(i),
                 TensorId::LayerQProjScale(i),
+                TensorId::LayerQProjQ4Weight(i),
+                TensorId::LayerQProjQ4Scale(i),
                 device,
             )?,
             k_proj: load_linear_weight::<B>(
@@ -145,6 +163,8 @@ pub fn load_range<B: Backend>(
                 &nm,
                 TensorId::LayerKProj(i),
                 TensorId::LayerKProjScale(i),
+                TensorId::LayerKProjQ4Weight(i),
+                TensorId::LayerKProjQ4Scale(i),
                 device,
             )?,
             v_proj: load_linear_weight::<B>(
@@ -152,6 +172,8 @@ pub fn load_range<B: Backend>(
                 &nm,
                 TensorId::LayerVProj(i),
                 TensorId::LayerVProjScale(i),
+                TensorId::LayerVProjQ4Weight(i),
+                TensorId::LayerVProjQ4Scale(i),
                 device,
             )?,
             o_proj: load_linear_weight::<B>(
@@ -159,6 +181,8 @@ pub fn load_range<B: Backend>(
                 &nm,
                 TensorId::LayerOProj(i),
                 TensorId::LayerOProjScale(i),
+                TensorId::LayerOProjQ4Weight(i),
+                TensorId::LayerOProjQ4Scale(i),
                 device,
             )?,
             ffn_norm: load_1d(TensorId::LayerFfnNorm(i))?,
@@ -167,6 +191,8 @@ pub fn load_range<B: Backend>(
                 &nm,
                 TensorId::LayerFfnGate(i),
                 TensorId::LayerFfnGateScale(i),
+                TensorId::LayerFfnGateQ4Weight(i),
+                TensorId::LayerFfnGateQ4Scale(i),
                 device,
             )?,
             ffn_up: load_linear_weight::<B>(
@@ -174,6 +200,8 @@ pub fn load_range<B: Backend>(
                 &nm,
                 TensorId::LayerFfnUp(i),
                 TensorId::LayerFfnUpScale(i),
+                TensorId::LayerFfnUpQ4Weight(i),
+                TensorId::LayerFfnUpQ4Scale(i),
                 device,
             )?,
             ffn_down: load_linear_weight::<B>(
@@ -181,6 +209,8 @@ pub fn load_range<B: Backend>(
                 &nm,
                 TensorId::LayerFfnDown(i),
                 TensorId::LayerFfnDownScale(i),
+                TensorId::LayerFfnDownQ4Weight(i),
+                TensorId::LayerFfnDownQ4Scale(i),
                 device,
             )?,
         });
@@ -198,6 +228,8 @@ pub fn load_range<B: Backend>(
             &nm,
             TensorId::OutputProjection,
             TensorId::OutputProjectionScale,
+            TensorId::OutputProjectionQ4Weight,
+            TensorId::OutputProjectionQ4Scale,
             device,
         )?)
     } else {
@@ -212,16 +244,90 @@ pub fn load_range<B: Backend>(
     })
 }
 
-/// Load a 2D Linear weight, detecting Q8 (int8 + `<name>.scale` companion) and
-/// constructing a `LinearWeight::Quantized` in that case. Otherwise builds a
-/// `LinearWeight::Dense` via the standard f32/f16/bf16 conversion path.
+/// Load a 2D Linear weight with three dispatched paths:
+///
+/// 1. **Q4 path** — if `<name>.q4_weight` (packed nibbles, U8, shape
+///    `[in, out/2]`) is present in the safetensors archive, load it together
+///    with `<name>.q4_scale` (f32, shape `[in/32, out]`) and build
+///    `LinearWeight::Q4(Q4Tensor)`. Q4 weights are stored **pre-transposed**
+///    in math order `[in, out]`, so callers must use `ensure_math_order()`
+///    instead of `swap_dims(0, 1)`.
+/// 2. **Q8 path** — base weight present with dtype `I8` and a single-element
+///    `<name>.scale`. Build `LinearWeight::Quantized(QuantizedTensor)`.
+/// 3. **Dense path** — base weight present with f32/f16/bf16 dtype. Convert
+///    to f32 and build `LinearWeight::Dense`.
 fn load_linear_weight<B: Backend>(
     st: &SafeTensors<'_>,
     nm: &WeightNameMap,
     weight_id: TensorId,
     scale_id: TensorId,
+    q4_weight_id: TensorId,
+    q4_scale_id: TensorId,
     device: &B::Device,
 ) -> anyhow::Result<LinearWeight<B>> {
+    // 1. Q4 path: look for `<name>.q4_weight` first; if present, this weight
+    // was Q4-quantized at fixture-generation time.
+    let q4_weight_name = nm.lookup(q4_weight_id);
+    if let Ok(packed_view) = st.tensor(&q4_weight_name) {
+        if packed_view.dtype() != safetensors::Dtype::U8 {
+            anyhow::bail!(
+                "Q4 weight `{q4_weight_name}` expected U8 dtype, got {:?}",
+                packed_view.dtype()
+            );
+        }
+        let packed_shape = packed_view.shape();
+        if packed_shape.len() != 2 {
+            anyhow::bail!(
+                "Q4 weight `{q4_weight_name}` expected 2D, got shape {:?}",
+                packed_shape
+            );
+        }
+        // packed_shape = [in, out/2]; reconstructed shape = [in, out].
+        let in_dim = packed_shape[0];
+        let out_dim = packed_shape[1] * 2;
+        let packed: Vec<u8> = packed_view.data().to_vec();
+
+        let q4_scale_name = nm.lookup(q4_scale_id);
+        let scale_view = st.tensor(&q4_scale_name).with_context(|| {
+            format!("Q4 weight `{q4_weight_name}` missing scale `{q4_scale_name}`")
+        })?;
+        if scale_view.dtype() != safetensors::Dtype::F32 {
+            anyhow::bail!(
+                "Q4 scale `{q4_scale_name}` expected F32, got {:?}",
+                scale_view.dtype()
+            );
+        }
+        let scale_shape = scale_view.shape();
+        if scale_shape.len() != 2 {
+            anyhow::bail!(
+                "Q4 scale `{q4_scale_name}` expected 2D, got shape {:?}",
+                scale_shape
+            );
+        }
+        if in_dim % Q4_GROUP_SIZE != 0 {
+            anyhow::bail!(
+                "Q4 weight `{q4_weight_name}` in dim {in_dim} not divisible by group size {Q4_GROUP_SIZE}"
+            );
+        }
+        let num_groups = in_dim / Q4_GROUP_SIZE;
+        if scale_shape[0] != num_groups || scale_shape[1] != out_dim {
+            anyhow::bail!(
+                "Q4 scale `{q4_scale_name}` shape {:?} mismatches expected [{}, {}] derived from packed weight",
+                scale_shape,
+                num_groups,
+                out_dim
+            );
+        }
+        let scales: Vec<f32> = bytemuck::cast_slice::<u8, f32>(scale_view.data()).to_vec();
+        return Ok(LinearWeight::Q4(Q4Tensor::from_packed(
+            packed,
+            scales,
+            [in_dim, out_dim],
+            device,
+        )));
+    }
+
+    // 2 & 3. Dense / Q8 dispatch on the base tensor.
     let name = nm.lookup(weight_id);
     let view = st
         .tensor(&name)
