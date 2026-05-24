@@ -12,6 +12,7 @@ use ai_engine_runtime::arch::attention::Attention;
 use ai_engine_runtime::arch::block::DecoderBlock;
 use ai_engine_runtime::arch::embedding::{OutputProjection, TokenEmbedding};
 use ai_engine_runtime::arch::ffn::SwiGluFfn;
+use ai_engine_runtime::arch::linear::LinearWeight;
 use ai_engine_runtime::arch::rmsnorm::RmsNorm;
 use ai_engine_runtime::arch::rope::RotaryEmbedding;
 use ai_engine_runtime::config::ModelConfig;
@@ -381,7 +382,7 @@ where
             .ok_or_else(|| anyhow::anyhow!("untied output projection missing"))?
             .swap_dims(0, 1)
     };
-    let output = OutputProjection::new(output_weight);
+    let output = OutputProjection::new(LinearWeight::Dense(output_weight));
 
     let mut blocks: Vec<DecoderBlock<B>> = Vec::with_capacity(leader_layers.len());
     for layer in weights.layers {
@@ -394,19 +395,19 @@ where
             &device,
         );
         let attn = Attention::new(
-            layer.q_proj.swap_dims(0, 1),
-            layer.k_proj.swap_dims(0, 1),
-            layer.v_proj.swap_dims(0, 1),
-            layer.o_proj.swap_dims(0, 1),
+            LinearWeight::Dense(layer.q_proj.swap_dims(0, 1)),
+            LinearWeight::Dense(layer.k_proj.swap_dims(0, 1)),
+            LinearWeight::Dense(layer.v_proj.swap_dims(0, 1)),
+            LinearWeight::Dense(layer.o_proj.swap_dims(0, 1)),
             rope,
             cfg.n_heads,
             cfg.n_kv_heads,
             cfg.head_dim,
         );
         let ffn = SwiGluFfn::new(
-            layer.ffn_gate.swap_dims(0, 1),
-            layer.ffn_up.swap_dims(0, 1),
-            layer.ffn_down.swap_dims(0, 1),
+            LinearWeight::Dense(layer.ffn_gate.swap_dims(0, 1)),
+            LinearWeight::Dense(layer.ffn_up.swap_dims(0, 1)),
+            LinearWeight::Dense(layer.ffn_down.swap_dims(0, 1)),
         );
         blocks.push(DecoderBlock {
             attn_norm,

@@ -1,3 +1,4 @@
+use crate::arch::linear::LinearWeight;
 use burn::tensor::{backend::Backend, Int, Tensor};
 
 pub struct TokenEmbedding<B: Backend> {
@@ -20,16 +21,16 @@ impl<B: Backend> TokenEmbedding<B> {
 }
 
 pub struct OutputProjection<B: Backend> {
-    pub weight: Tensor<B, 2>, // [hidden, vocab]
+    pub weight: LinearWeight<B>, // [hidden, vocab]
 }
 
 impl<B: Backend> OutputProjection<B> {
-    pub fn new(weight: Tensor<B, 2>) -> Self {
+    pub fn new(weight: LinearWeight<B>) -> Self {
         Self { weight }
     }
 
     /// `x: [batch, seq, hidden]` -> `[batch, seq, vocab]`.
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-        x.matmul(self.weight.clone().unsqueeze())
+        self.weight.matmul(x)
     }
 }

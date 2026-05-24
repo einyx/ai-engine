@@ -3,6 +3,7 @@ use crate::arch::{
     embedding::{OutputProjection, TokenEmbedding},
     attention::Attention,
     ffn::SwiGluFfn,
+    linear::LinearWeight,
     rmsnorm::RmsNorm,
     rope::RotaryEmbedding,
 };
@@ -81,7 +82,7 @@ impl<B: Backend> Model<B> {
                 device,
             )
         };
-        let output = OutputProjection::new(output_w);
+        let output = OutputProjection::new(LinearWeight::Dense(output_w));
 
         Self {
             embedding,
@@ -131,7 +132,7 @@ impl<B: Backend> Model<B> {
             (false, Some(w)) => w.swap_dims(0, 1),
             (false, None) => anyhow::bail!("untied output projection missing"),
         };
-        let output = OutputProjection::new(output_weight);
+        let output = OutputProjection::new(LinearWeight::Dense(output_weight));
 
         if weights.layers.len() != cfg.n_layers {
             anyhow::bail!(
@@ -153,19 +154,19 @@ impl<B: Backend> Model<B> {
             );
             // HF stores each projection as [out, in]; transpose to [in, out].
             let attn = Attention::new(
-                layer.q_proj.swap_dims(0, 1),
-                layer.k_proj.swap_dims(0, 1),
-                layer.v_proj.swap_dims(0, 1),
-                layer.o_proj.swap_dims(0, 1),
+                LinearWeight::Dense(layer.q_proj.swap_dims(0, 1)),
+                LinearWeight::Dense(layer.k_proj.swap_dims(0, 1)),
+                LinearWeight::Dense(layer.v_proj.swap_dims(0, 1)),
+                LinearWeight::Dense(layer.o_proj.swap_dims(0, 1)),
                 rope,
                 cfg.n_heads,
                 cfg.n_kv_heads,
                 cfg.head_dim,
             );
             let ffn = SwiGluFfn::new(
-                layer.ffn_gate.swap_dims(0, 1),
-                layer.ffn_up.swap_dims(0, 1),
-                layer.ffn_down.swap_dims(0, 1),
+                LinearWeight::Dense(layer.ffn_gate.swap_dims(0, 1)),
+                LinearWeight::Dense(layer.ffn_up.swap_dims(0, 1)),
+                LinearWeight::Dense(layer.ffn_down.swap_dims(0, 1)),
             );
             blocks.push(DecoderBlock {
                 attn_norm,

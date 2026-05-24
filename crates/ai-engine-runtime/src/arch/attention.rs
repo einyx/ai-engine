@@ -10,6 +10,7 @@
 //! 5. Scaled dot-product attention with an additive causal mask.
 //! 6. Merge heads and apply the output projection.
 
+use crate::arch::linear::LinearWeight;
 use crate::arch::rope::RotaryEmbedding;
 use crate::kv_cache::KvCacheSlot;
 use burn::tensor::{Distribution, Tensor, TensorData, activation::softmax, backend::Backend};
@@ -22,10 +23,10 @@ use burn::tensor::{Distribution, Tensor, TensorData, activation::softmax, backen
 /// - `v_proj`: `[hidden, n_kv_heads * head_dim]`
 /// - `o_proj`: `[n_heads * head_dim, hidden]`
 pub struct Attention<B: Backend> {
-    pub q_proj: Tensor<B, 2>,
-    pub k_proj: Tensor<B, 2>,
-    pub v_proj: Tensor<B, 2>,
-    pub o_proj: Tensor<B, 2>,
+    pub q_proj: LinearWeight<B>,
+    pub k_proj: LinearWeight<B>,
+    pub v_proj: LinearWeight<B>,
+    pub o_proj: LinearWeight<B>,
     pub rope: RotaryEmbedding<B>,
     pub n_heads: usize,
     pub n_kv_heads: usize,
@@ -36,10 +37,10 @@ pub struct Attention<B: Backend> {
 impl<B: Backend> Attention<B> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        q_proj: Tensor<B, 2>,
-        k_proj: Tensor<B, 2>,
-        v_proj: Tensor<B, 2>,
-        o_proj: Tensor<B, 2>,
+        q_proj: LinearWeight<B>,
+        k_proj: LinearWeight<B>,
+        v_proj: LinearWeight<B>,
+        o_proj: LinearWeight<B>,
         rope: RotaryEmbedding<B>,
         n_heads: usize,
         n_kv_heads: usize,
@@ -93,7 +94,16 @@ impl<B: Backend> Attention<B> {
             device,
         );
         let rope = RotaryEmbedding::<B>::new(head_dim, max_seq, rope_theta, device);
-        Self::new(q_proj, k_proj, v_proj, o_proj, rope, n_heads, n_kv_heads, head_dim)
+        Self::new(
+            LinearWeight::Dense(q_proj),
+            LinearWeight::Dense(k_proj),
+            LinearWeight::Dense(v_proj),
+            LinearWeight::Dense(o_proj),
+            rope,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+        )
     }
 
     /// Forward pass.
@@ -110,12 +120,9 @@ impl<B: Backend> Attention<B> {
         let [batch, seq, _hidden] = x.dims();
 
         // 1. Linear projections.
-        let q_w: Tensor<B, 3> = self.q_proj.clone().unsqueeze();
-        let k_w: Tensor<B, 3> = self.k_proj.clone().unsqueeze();
-        let v_w: Tensor<B, 3> = self.v_proj.clone().unsqueeze();
-        let q = x.clone().matmul(q_w);
-        let k = x.clone().matmul(k_w);
-        let v = x.matmul(v_w);
+        let q = self.q_proj.matmul(x.clone());
+        let k = self.k_proj.matmul(x.clone());
+        let v = self.v_proj.matmul(x);
 
         // 2. Reshape to [batch, heads, seq, head_dim].
         let q = q
@@ -155,8 +162,7 @@ impl<B: Backend> Attention<B> {
             .reshape([batch, seq, self.n_heads * self.head_dim]);
 
         // 8. Output projection.
-        let o_w: Tensor<B, 3> = self.o_proj.clone().unsqueeze();
-        ctx.matmul(o_w)
+        self.o_proj.matmul(ctx)
     }
 }
 
