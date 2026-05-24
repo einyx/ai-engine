@@ -1,4 +1,43 @@
+use ai_engine_runtime::arch::linear::LinearWeight;
+use ai_engine_runtime::config::ModelConfig;
+use ai_engine_runtime::loader::load_gguf;
 use ai_engine_runtime::name_map::hf_from_gguf;
+use std::path::PathBuf;
+
+type B = burn_ndarray::NdArray;
+
+fn gguf_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/toy-llama-3-gguf")
+}
+
+#[test]
+fn load_gguf_fixture_produces_q4_gguf_weights() {
+    let cfg = ModelConfig::from_file(&gguf_fixture().join("config.json")).unwrap();
+    let dev = Default::default();
+    let weights = load_gguf::<B>(
+        &gguf_fixture().join("model.gguf"),
+        &cfg,
+        0..cfg.n_layers,
+        true,
+        true,
+        &dev,
+    )
+    .unwrap();
+    assert_eq!(weights.layers.len(), cfg.n_layers);
+    for (i, layer) in weights.layers.iter().enumerate() {
+        assert!(
+            matches!(layer.q_proj, LinearWeight::Q4Gguf(_)),
+            "layer {i} q_proj should be Q4Gguf"
+        );
+        assert!(matches!(layer.k_proj, LinearWeight::Q4Gguf(_)));
+        assert!(matches!(layer.v_proj, LinearWeight::Q4Gguf(_)));
+        assert!(matches!(layer.o_proj, LinearWeight::Q4Gguf(_)));
+        assert!(matches!(layer.ffn_gate, LinearWeight::Q4Gguf(_)));
+        assert!(matches!(layer.ffn_up, LinearWeight::Q4Gguf(_)));
+        assert!(matches!(layer.ffn_down, LinearWeight::Q4Gguf(_)));
+    }
+    assert!(weights.embedding.is_some());
+}
 
 #[test]
 fn translates_layer_attn_q() {
