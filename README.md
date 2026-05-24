@@ -439,3 +439,24 @@ Known limitations:
 - mDNS multicast may be unavailable on some restricted networks /
   Docker setups. The `multiproc_smoke_mdns` test is `#[ignore]`d for
   portability.
+
+### v0.3.0-alpha.5 — GGUF binary wiring
+
+ai-engine v0.3.0-alpha.5 loads `.gguf` checkpoints through the binary
+path. Just point `weights_path` at a GGUF file:
+
+```toml
+[cluster.model]
+id = "llama-3-70b"
+config_path = "/srv/models/llama-3-70b/config.json"
+weights_path = "/srv/models/llama-3-70b/model.gguf"     # <-- .gguf, not .safetensors
+tokenizer_path = "/srv/models/llama-3-70b/tokenizer.json"
+```
+
+The new `load_weights` function dispatches on file extension; everything
+else (workers, leader, partitioning, generation) is unchanged.
+
+Known limitations (still deferred):
+- `config_path` + `tokenizer_path` still required even when the GGUF
+  embeds them. Pulling these from GGUF metadata is a future cleanup.
+- Only Q4_0 + F32 + F16 + BF16 GGUF tensor types decoded.
