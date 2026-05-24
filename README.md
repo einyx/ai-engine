@@ -486,3 +486,77 @@ Known limitations:
 - Only byte-level BPE tokenizers (`tokenizer.ggml.model = "gpt2"`/`"llama"`).
   SentencePiece-based GGUF tokenizers deferred.
 - `tie_word_embeddings` defaults to `true` (the Llama-3 norm).
+
+### v0.3.0-alpha.7 — Q4_1, Q6_K, and real-Llama-3 inference correctness
+
+ai-engine v0.3.0-alpha.7 makes real `llama.cpp`-converted Llama-3 GGUFs
+produce coherent inference output end-to-end. A 3-process cluster loading
+`bartowski/Llama-3.2-1B-Instruct-Q4_0.gguf` now generates English chat
+completions; before this release it loaded but produced gibberish.
+
+The release ships:
+
+1. **Q4_1 dequantization** (ggml type 3). 32-element blocks with `d`
+   (scale) and `m` (min) f16 scalars; `value = nibble * d + m`.
+   Encountered in Llama-3.2-1B's `ffn_down` on layers 0 and 1.
+2. **Q6_K dequantization** (ggml type 14). 256-element superblocks with
+   16 packed i8 sub-block scales and a single f16 super-scale. 6 bits per
+   weight split across `ql[]` (low 4) and `qh[]` (high 2). Used for
+   `token_embd.weight` (and `lm_head.weight` when untied).
+3. **Embedding layout fix.** When `token_embd.weight` is present in a
+   GGUF, swap `[hidden, vocab]` → `[vocab, hidden]` to match the
+   embedding-lookup convention. Previously only the tied-embedding
+   fallback path applied this swap.
+4. **Q/K weight unpermutation for llama-converted Llama checkpoints.**
+   llama.cpp's `convert-hf-to-gguf.py` permutes `q_proj` and `k_proj`
+   weights to compensate for ggml's interleaved-pair RoPE convention.
+   ai-engine uses HF's split-halves RoPE, so we apply the inverse
+   permutation (reshape `[h, n_heads, 2, d/2]` → `swap_dims(2, 3)` →
+   reshape back) on load. Active when `ModelFamily == Llama3`.
+5. **Per-layer activation divergence harness** at
+   `crates/ai-engine-runtime/tests/divergence_trace.rs` — env-gated
+   integration test that compares safetensors-loaded vs GGUF-loaded
+   forward-pass activations layer by layer. Built during the bug hunt;
+   shipped as ongoing regression infrastructure.
+
+A 3-process cluster minimal config:
+
+```toml
+[cluster.model]
+id = "llama-3.2-1b"
+weights_path = "/srv/models/Llama-3.2-1B-Instruct-Q4_0.gguf"
+```
+
+Verified end-to-end with greedy decoding on `Llama-3.2-1B-Instruct-Q4_0`:
+```
+prompt:  "Hello, who are you?"
+output:  "You: I am a"
+```
+
+Opt-in real-model smoke (requires a local GGUF download):
+
+```bash
+AI_ENGINE_REAL_GGUF=/path/to/real.gguf \
+  cargo test -p ai-engine --test real_model_smoke -- --ignored --nocapture
+```
+
+Known limitations:
+
+- Q4_1 and Q6_K go through the Dense matmul path (no native quantized
+  matmul yet); the Q/K unpermute also force-dequantizes q_proj/k_proj
+  to f32. For Llama-3.2-1B this costs ~320 MB extra memory vs a
+  hypothetical native quantized path.
+- K-quants beyond Q6_K (Q4_K, Q5_K, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K)
+  remain unsupported.
+- The `tokenizer.ggml.pre = "llama-bpe"` pre-tokenizer regex is still
+  not honored; the loader uses a generic GPT-2 byte-level pre-tokenizer.
+  Empirically this produces matching token IDs on common English inputs
+  (verified via a comparison probe) but may diverge on numbers,
+  contractions, or special characters.
+- Real-model inference on CPU is slow (~18 s/token for a 1B model in a
+  3-process cluster); the opt-in real-model smoke uses `max_tokens=5`.
+
+The toy GGUF fixture was regenerated to match real ggml format
+(`scripts/generate_gguf_q4_0_fixture.py` now applies the same Q/K
+permutation llama.cpp does), so the toy and real paths exercise
+identical code.
