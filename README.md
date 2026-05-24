@@ -309,3 +309,30 @@ ai-engine v0.2.1 closes three v0.2.0 gaps:
 Updated known limitations (still deferred to v0.3+): mDNS auto-discovery,
 dynamic worker membership, automatic failover, quantization, tensor
 parallelism, web playground UI.
+
+### v0.3.0-alpha — Q8 weight quantization
+
+ai-engine v0.3.0-alpha adds Q8 (8-bit symmetric per-tensor) weight
+quantization to `ai-engine-runtime`. Each Linear weight is stored as
+int8 + an f32 scale; the forward pass dequantizes per call. Memory at
+rest is ~2× smaller for the toy fixture (more for real models where
+Linear weights dominate the parameter count).
+
+Correctness:
+- Q8 forward matches bf16 reference within ~0.023 on the random-init
+  toy-llama-3 fixture. Argmax matches exactly. Real models with
+  structured weights see substantially smaller per-op error.
+- 3-node Q8 cluster generation matches single-node Q8 generation EXACTLY
+  under greedy sampling — the QUIC wire serialization preserves Q8
+  forward output byte-for-byte.
+
+Generate a Q8 checkpoint from any bf16 safetensors model using the
+`crates/ai-engine-runtime/scripts/generate_q8_fixture.py` template.
+
+Known limitations:
+- Q4 (4-bit packed) not supported — Plan 6.
+- Dequantize-on-forward is unfused; specialized int8 GEMM would be
+  substantially faster on GPU backends.
+- Loader recognizes only our `<name>.scale` convention, not
+  bitsandbytes `<name>.SCB` per-channel scales or AWQ/GPTQ layouts.
+- Activations stay f32.
