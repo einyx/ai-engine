@@ -80,7 +80,6 @@ impl Provider for CandleProvider {
         _creds: &Credentials,
         ctx: &CallCtx,
     ) -> Result<openai::ChatResponse, ProviderError> {
-        let prompt = render_prompt(&req);
         let params = GenParams {
             max_tokens: req.max_tokens.unwrap_or(256) as usize,
             temperature: req.temperature.unwrap_or(0.0),
@@ -90,6 +89,7 @@ impl Provider for CandleProvider {
         // the blocking call via `block_in_place` so we don't stall the async
         // runtime's worker thread.
         let mut guard = self.pool.acquire().await;
+        let prompt = build_prompt(&guard, &req);
         let mut prompt_tokens = 0usize;
         let result = tokio::task::block_in_place(|| {
             let ids = guard.generate(&prompt, &params, |_| {}, &mut prompt_tokens)?;
@@ -115,7 +115,6 @@ impl Provider for CandleProvider {
         _creds: &Credentials,
         ctx: &CallCtx,
     ) -> Result<EventStream<openai::ChatStreamEvent>, ProviderError> {
-        let prompt = render_prompt(&req);
         let params = GenParams {
             max_tokens: req.max_tokens.unwrap_or(256) as usize,
             temperature: req.temperature.unwrap_or(0.0),
@@ -136,6 +135,7 @@ impl Provider for CandleProvider {
         // suffix.
         tokio::spawn(async move {
             let mut guard = pool.acquire().await;
+            let prompt = build_prompt(&guard, &req);
             let mut prompt_tokens = 0usize;
             let result = tokio::task::block_in_place(|| {
                 let mut emitted: Vec<u32> = Vec::new();
@@ -240,6 +240,42 @@ fn build_chat_response(
             total_tokens: (prompt_tokens + completion_tokens) as u32,
         }),
         extras: Default::default(),
+    }
+}
+
+/// Convert OpenAI chat messages into template messages.
+fn to_template_messages(req: &openai::ChatRequest) -> Vec<crate::template::TemplateMessage> {
+    req.messages
+        .iter()
+        .map(|m| {
+            let content = match &m.content {
+                openai::ChatContent::Text(s) => s.clone(),
+                openai::ChatContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()).map(String::from))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            crate::template::TemplateMessage {
+                role: m.role.clone(),
+                content,
+            }
+        })
+        .collect()
+}
+
+/// Build the prompt for `req` using `model`'s embedded chat template, falling
+/// back to the plain `render_prompt` format when no template is present or
+/// rendering fails.
+fn build_prompt(model: &crate::model::CandleModel, req: &openai::ChatRequest) -> String {
+    let msgs = to_template_messages(req);
+    match model.render_with_chat_template(&msgs) {
+        Some(Ok(p)) => p,
+        Some(Err(e)) => {
+            tracing::warn!("chat_template render failed ({e}); falling back to plain prompt");
+            render_prompt(req)
+        }
+        None => render_prompt(req),
     }
 }
 

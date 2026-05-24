@@ -254,6 +254,25 @@ Apache-2.0.
 
 ## Release history
 
+### v0.4.0-alpha.3 — GGUF chat templates (instruct models answer as assistants)
+
+The `kind = "candle-local"` provider now applies each GGUF's embedded chat
+template (HF `tokenizer.chat_template`, rendered via minijinja + the pycompat
+shim) when building the prompt. Instruct models now answer as assistants
+instead of doing raw text completion. When a GGUF has no embedded template
+(or rendering fails), the provider falls back to the plain
+`"role: text\n"` formatting.
+
+Sample outputs for the same prompt `"Hello, who are you?"` (CUDA, 60 tokens):
+
+Llama-3.2-1B-Instruct-Q4_0:
+- **Before** (raw completion): `"You: I am a bot, a language model designed to assist..."`
+- **After** (assistant): `"I'm an AI designed to provide information and answer questions to the best of my ability. I'm here to help you with any questions or topics you'd like to discuss. What's on your mind today?..."`
+
+Qwen2-0.5B-Instruct-Q4_0:
+- **Before** (raw completion): `"User: Hi! I'm a student. What can I do for you?..."`
+- **After** (assistant): `"I am an artificial intelligence assistant. How can I assist you today?<|im_end|>..."`
+
 ### v0.2.0-alpha.1 — Single-node inference preview
 
 ai-engine v0.2-alpha can load a Llama-3-family safetensors checkpoint
