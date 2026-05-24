@@ -92,6 +92,31 @@ pub fn validate(cfg: &Config) -> anyhow::Result<()> {
                 );
             }
         }
+
+        // GGUF self-describing checkpoints carry ModelConfig + tokenizer in
+        // their metadata; for non-GGUF weights, both config_path and
+        // tokenizer_path are required.
+        let is_gguf = cluster
+            .model
+            .weights_path
+            .rsplit('.')
+            .next()
+            .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+            .unwrap_or(false);
+        if !is_gguf {
+            if cluster.model.config_path.is_none() {
+                anyhow::bail!(
+                    "cluster `{}` model.config_path required when weights_path is not a .gguf file",
+                    cluster.id
+                );
+            }
+            if cluster.model.tokenizer_path.is_none() {
+                anyhow::bail!(
+                    "cluster `{}` model.tokenizer_path required when weights_path is not a .gguf file",
+                    cluster.id
+                );
+            }
+        }
     }
 
     // local-cluster providers must reference an existing cluster

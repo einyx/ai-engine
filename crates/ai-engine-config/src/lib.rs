@@ -165,9 +165,11 @@ fn default_discover_timeout() -> u64 {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClusterModel {
     pub id: String,
-    pub config_path: String,
     pub weights_path: String,
-    pub tokenizer_path: String,
+    #[serde(default)]
+    pub config_path: Option<String>,
+    #[serde(default)]
+    pub tokenizer_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

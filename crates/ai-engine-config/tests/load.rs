@@ -519,6 +519,92 @@ stages = ["forward", "log"]
 }
 
 #[test]
+fn cluster_model_block_with_only_weights_path_for_gguf() {
+    let toml = r#"
+[server]
+bind = "127.0.0.1:0"
+
+[auth]
+mode = "passthrough"
+
+[[cluster]]
+id = "home"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.model]
+id = "llama-3-70b"
+weights_path = "/srv/models/llama-3-70b/model.gguf"
+
+[[cluster.node]]
+id = "node-a"
+addr = "127.0.0.1:7700"
+cert_fingerprint = "sha256:abc"
+backend = "cpu"
+
+[[provider]]
+id = "home-cluster"
+kind = "local-cluster"
+cluster = "home"
+
+[[route]]
+match = { model = "llama-3-70b" }
+provider = "home-cluster"
+
+[pipeline."/v1/chat/completions"]
+stages = ["auth", "model_route", "forward", "log"]
+"#;
+    let cfg = ai_engine_config::Config::from_str(toml).unwrap();
+    let m = &cfg.clusters[0].model;
+    assert_eq!(m.weights_path, "/srv/models/llama-3-70b/model.gguf");
+    assert!(m.config_path.is_none());
+    assert!(m.tokenizer_path.is_none());
+}
+
+#[test]
+fn cluster_model_block_with_safetensors_requires_config_and_tokenizer_paths() {
+    let toml = r#"
+[server]
+bind = "127.0.0.1:0"
+
+[auth]
+mode = "passthrough"
+
+[[cluster]]
+id = "home"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+
+[cluster.model]
+id = "llama-3-70b"
+weights_path = "/srv/models/llama-3-70b/model.safetensors"
+
+[[cluster.node]]
+id = "node-a"
+addr = "127.0.0.1:7700"
+cert_fingerprint = "sha256:abc"
+backend = "cpu"
+
+[[provider]]
+id = "home-cluster"
+kind = "local-cluster"
+cluster = "home"
+
+[[route]]
+match = { model = "llama-3-70b" }
+provider = "home-cluster"
+
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+    let err = ai_engine_config::Config::from_str(toml).unwrap_err().to_string();
+    assert!(
+        err.to_lowercase().contains("config_path") || err.to_lowercase().contains("tokenizer_path"),
+        "got error: {err}"
+    );
+}
+
+#[test]
 fn cluster_discover_with_zero_workers_rejected() {
     let toml = r#"
 [server]
