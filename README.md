@@ -460,3 +460,29 @@ Known limitations (still deferred):
 - `config_path` + `tokenizer_path` still required even when the GGUF
   embeds them. Pulling these from GGUF metadata is a future cleanup.
 - Only Q4_0 + F32 + F16 + BF16 GGUF tensor types decoded.
+
+### v0.3.0-alpha.6 — GGUF self-describing checkpoints
+
+ai-engine v0.3.0-alpha.6 drops the requirement for separate `config_path`
+and `tokenizer_path` when `weights_path` is a `.gguf` file. The GGUF
+metadata already carries both — extract them at load time:
+
+```toml
+[cluster.model]
+id = "llama-3-70b"
+weights_path = "/srv/models/llama-3-70b/model.gguf"
+# config_path + tokenizer_path no longer required for GGUF
+```
+
+Internals:
+- `ModelConfig::from_gguf_file` extracts hyperparams from `llama.*` keys.
+- `load_tokenizer_from_gguf` rebuilds the HF tokenizer from
+  `tokenizer.ggml.tokens` + `.merges` (Llama-3-style byte-level BPE).
+- Both are dispatched automatically by `build_app_state` and the
+  worker entrypoint when the corresponding TOML path is absent.
+
+Known limitations:
+- Only Llama-3-family (`general.architecture = "llama"`) supported.
+- Only byte-level BPE tokenizers (`tokenizer.ggml.model = "gpt2"`/`"llama"`).
+  SentencePiece-based GGUF tokenizers deferred.
+- `tie_word_embeddings` defaults to `true` (the Llama-3 norm).
