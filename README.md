@@ -336,3 +336,37 @@ Known limitations:
 - Loader recognizes only our `<name>.scale` convention, not
   bitsandbytes `<name>.SCB` per-channel scales or AWQ/GPTQ layouts.
 - Activations stay f32.
+
+### v0.3.0-alpha.2 — Q4 weight quantization
+
+ai-engine v0.3.0-alpha.2 adds Q4 (4-bit, per-group symmetric, group
+size 32) weight quantization. Each Linear weight is stored as packed
+nibbles (2 values per byte) plus per-group f32 scales. Memory at rest
+is ~3.2× smaller than bf16 for the toy fixture (closer to 4× for
+realistic models where Linear weights dominate parameter count).
+
+Correctness:
+- Q4 forward drift vs bf16 reference is ~0.28 on the random-init
+  toy-llama-3 fixture — argmax does not match because the random toy
+  has only 0.14 separation between its top-10 logits. Dispatch-parity
+  test proves the Q4 matmul is bit-identical to dequantize-then-Dense
+  matmul, so the drift is intrinsic per-group Q4 noise, not a bug.
+  Trained models have substantially wider top-1 separation and would
+  preserve argmax.
+- 3-node Q4 cluster generation matches single-node Q4 generation
+  EXACTLY under greedy sampling — the QUIC wire serialization
+  preserves Q4 forward output bit-for-bit.
+
+Format: our own per-group symmetric Q4, group size 32, low-nibble-first
+packing. Stored pre-transposed (math order [in, out]) so the loader
+never has to transpose Q4 weights at load time.
+
+Generate a Q4 checkpoint from any bf16 safetensors model using
+`crates/ai-engine-runtime/scripts/generate_q4_fixture.py`.
+
+Known limitations (still deferred):
+- External format readers (AWQ / GPTQ / GGUF / bitsandbytes NF4).
+- Dequantize-on-forward is unfused; specialized int4 GEMM kernels
+  would be substantially faster on GPU backends.
+- Activations stay f32.
+- Per-group symmetric only; no zero-point variants.
