@@ -654,6 +654,40 @@ Known limitations:
 - Per-call BLAS dispatch overhead is now visible; further wins likely
   require batching multiple layers' matmuls or moving to a GPU backend.
 
+### v0.4.0-alpha.2 — multi-architecture candle dispatch (llama/qwen2/qwen3)
+
+ai-engine v0.4.0-alpha.2 generalizes the `kind = "candle-local"` provider
+beyond Llama. The provider now reads `general.architecture` from the GGUF
+metadata and dispatches to the matching `candle_transformers` quantized
+model — currently **llama**, **qwen2**, and **qwen3** (auto-detected, no
+config change). An allowlist guard rejects any architecture that has not
+been validated end-to-end, returning a clear error instead of loading a
+model that would silently produce garbage.
+
+The Qwen2 path was validated end-to-end on a real
+`Qwen/Qwen2-0.5B-Instruct-GGUF` `qwen2-0_5b-instruct-q4_0.gguf`
+(`general.architecture = "qwen2"`, 337 MiB), 20-token completion, prompt
+"Hello, who are you?" (RTX 4070, CUDA 12.0):
+
+| backend | tokens/sec | output |
+|---|---|---|
+| CPU (`backend-candle`) | 1.52 | coherent |
+| GPU (`backend-candle-cuda`) | **115.5** | coherent |
+
+GPU completion (also confirmed identical via the streaming smoke, 20
+deltas): `"User: Hi, I'm a student. What can I do for you? \nPossible
+answers:\n"`. The model dispatch, Qwen2 tokenizer, and decode loop all
+work correctly for this non-Llama architecture. Note that the smoke
+prompt builder feeds plain `role: text` turns rather than each model's
+instruct chat template, so the model continues text rather than
+answering as a wrapped assistant — this is shared with the Llama path
+and is a property of the test harness, not the Qwen2 dispatch.
+
+Deferred: **gemma**, **phi**, and **mistral** are intentionally rejected
+by the allowlist. They need additional tokenizer work (SentencePiece /
+custom BPE) before they can be validated, so they are excluded rather
+than left to fail at decode time.
+
 ### v0.4.0-alpha.1 — native-quantized local GPU inference (candle)
 
 ai-engine v0.4.0-alpha.1 adds a new single-node local provider,
