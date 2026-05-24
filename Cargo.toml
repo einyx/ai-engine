@@ -47,6 +47,7 @@ ai-engine-http      = { path = "crates/ai-engine-http" }
 ai-engine-tokenizer = { path = "crates/ai-engine-tokenizer" }
 ai-engine-runtime = { path = "crates/ai-engine-runtime" }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+tempfile = "3"
 burn = { version = "0.21", default-features = false }
 burn-ndarray = "0.21"
 burn-cuda = "0.21"

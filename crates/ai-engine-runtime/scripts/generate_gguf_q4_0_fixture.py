@@ -120,6 +120,14 @@ def write_kv_string(buf, key, value):
     buf.extend(struct.pack("<I", TYPE_STRING))
     write_gguf_string(buf, value)
 
+def write_kv_string_array(buf, key, values):
+    write_gguf_string(buf, key)
+    buf.extend(struct.pack("<I", TYPE_ARRAY))
+    buf.extend(struct.pack("<I", TYPE_STRING))         # element type
+    buf.extend(struct.pack("<Q", len(values)))         # count
+    for v in values:
+        write_gguf_string(buf, v)
+
 # --- Build GGUF file ---
 
 # Load bf16 source.
@@ -143,6 +151,47 @@ write_kv_f32(meta, "llama.attention.layer_norm_rms_epsilon", cfg["rms_norm_eps"]
 rope_theta = cfg.get("rope_theta", cfg.get("rope_parameters", {}).get("rope_theta", 10000.0))
 write_kv_f32(meta, "llama.rope.freq_base", float(rope_theta)); meta_count += 1
 write_kv_u32(meta, "llama.vocab_size", cfg["vocab_size"]); meta_count += 1
+
+# --- Tokenizer metadata (Plan 10 Task 2) ---
+from tokenizers import Tokenizer as _HfTokenizer
+hf_tok = _HfTokenizer.from_file(str(SRC / "tokenizer.json"))
+
+# Tokens list: index -> string. Sort by id from the vocab. We pad up to
+# `cfg["vocab_size"]` so the GGUF reports the same vocab size the model's
+# embedding tensor has (the tokenizer has 197 real tokens but the model
+# embedding is padded to 512 for alignment).
+_tok_vocab = hf_tok.get_vocab(with_added_tokens=True)
+_vocab_size = cfg["vocab_size"]
+_max_id = max(_tok_vocab.values())
+assert _max_id < _vocab_size, f"tokenizer max id {_max_id} >= vocab_size {_vocab_size}"
+_tokens_by_id = [""] * _vocab_size
+for _s, _i in _tok_vocab.items():
+    _tokens_by_id[_i] = _s
+# Fill empty pad slots with deterministic unique placeholders so the BPE vocab
+# remains a one-to-one mapping (HashMap<String, u32>).
+for _i in range(_vocab_size):
+    if _tokens_by_id[_i] == "":
+        _tokens_by_id[_i] = f"<|pad_{_i}|>"
+
+# Tokenizer family is "gpt2"-style byte-level BPE for our toy Llama-3.
+write_kv_string(meta, "tokenizer.ggml.model", "gpt2"); meta_count += 1
+write_kv_string_array(meta, "tokenizer.ggml.tokens", _tokens_by_id); meta_count += 1
+
+# Merges come from the tokenizer.json directly (HF Tokenizer API doesn't easily
+# expose them as a Python list). Normalize each entry to "left right" form.
+_tok_json = json.loads((SRC / "tokenizer.json").read_text())
+_merges_list = _tok_json.get("model", {}).get("merges", [])
+_merges_strings = []
+for _m in _merges_list:
+    if isinstance(_m, list) and len(_m) == 2:
+        _merges_strings.append(f"{_m[0]} {_m[1]}")
+    elif isinstance(_m, str):
+        _merges_strings.append(_m)
+write_kv_string_array(meta, "tokenizer.ggml.merges", _merges_strings); meta_count += 1
+
+# Special tokens. The toy doesn't really use these — defaults are fine.
+write_kv_u32(meta, "tokenizer.ggml.bos_token_id", 0); meta_count += 1
+write_kv_u32(meta, "tokenizer.ggml.eos_token_id", 1); meta_count += 1
 
 # Build tensors
 tensor_descs = bytearray()

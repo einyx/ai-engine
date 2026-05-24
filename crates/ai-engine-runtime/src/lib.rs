@@ -13,6 +13,7 @@ pub mod name_map;
 pub mod quant;
 pub mod request;
 pub mod sample;
+pub mod tokenizer_gguf;
 
 pub use arch::model::Model;
 pub use backend::BackendKind;
@@ -22,3 +23,4 @@ pub use loader::{load_gguf, load_range, load_weights, LoadedWeights};
 pub use quant::{Q4Tensor, Q4_GROUP_SIZE, QuantizedTensor};
 pub use request::RequestState;
 pub use sample::{sample, SamplingConfig};
+pub use tokenizer_gguf::{load_tokenizer_from_gguf, load_tokenizer_from_gguf_metadata};
