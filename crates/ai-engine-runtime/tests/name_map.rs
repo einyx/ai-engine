@@ -39,3 +39,58 @@ fn qwen25_uses_llama_pattern() {
         "model.layers.3.mlp.down_proj.weight"
     );
 }
+
+#[test]
+fn llama3_q_proj_scale_companion_name() {
+    let nm = WeightNameMap::for_family(ModelFamily::Llama3);
+    assert_eq!(
+        nm.lookup(TensorId::LayerQProjScale(12)),
+        "model.layers.12.self_attn.q_proj.weight.scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::LayerFfnGateScale(0)),
+        "model.layers.0.mlp.gate_proj.weight.scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::OutputProjectionScale),
+        "lm_head.weight.scale"
+    );
+}
+
+#[test]
+fn llama3_ffn_gate_scale() {
+    let nm = WeightNameMap::for_family(ModelFamily::Llama3);
+    assert_eq!(
+        nm.lookup(TensorId::LayerFfnGateScale(7)),
+        "model.layers.7.mlp.gate_proj.weight.scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::LayerFfnUpScale(7)),
+        "model.layers.7.mlp.up_proj.weight.scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::LayerFfnDownScale(7)),
+        "model.layers.7.mlp.down_proj.weight.scale"
+    );
+}
+
+#[test]
+fn llama3_output_projection_scale() {
+    let nm = WeightNameMap::for_family(ModelFamily::Llama3);
+    assert_eq!(
+        nm.lookup(TensorId::OutputProjectionScale),
+        "lm_head.weight.scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::LayerKProjScale(3)),
+        "model.layers.3.self_attn.k_proj.weight.scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::LayerVProjScale(3)),
+        "model.layers.3.self_attn.v_proj.weight.scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::LayerOProjScale(3)),
+        "model.layers.3.self_attn.o_proj.weight.scale"
+    );
+}
