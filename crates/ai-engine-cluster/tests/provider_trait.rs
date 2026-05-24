@@ -188,14 +188,14 @@ async fn cluster_provider_chat_returns_completion_from_real_cluster() {
     assert_eq!(resp.choices.len(), 1, "exactly one choice expected");
     let choice = &resp.choices[0];
     assert_eq!(choice.message.role, "assistant");
-    let content = match &choice.message.content {
-        ChatContent::Text(s) => s.clone(),
+    // Verify shape only — toy fixture has random weights, and BPE decoding of
+    // 3 randomly-sampled tokens sometimes produces an empty UTF-8 string.
+    // The semantic gate is `completion_tokens > 0`, not non-empty decoded text;
+    // matches the existing multiproc_smoke assertion.
+    match &choice.message.content {
+        ChatContent::Text(_) => {}
         ChatContent::Parts(_) => panic!("expected Text content from cluster"),
     };
-    assert!(
-        !content.is_empty(),
-        "cluster chat must return a non-empty assistant message, got: {content:?}"
-    );
     let usage = resp.usage.as_ref().expect("usage must be populated");
     assert_eq!(usage.completion_tokens, 3);
     assert!(usage.prompt_tokens > 0);
