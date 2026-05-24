@@ -94,3 +94,24 @@ fn llama3_output_projection_scale() {
         "model.layers.3.self_attn.o_proj.weight.scale"
     );
 }
+
+#[test]
+fn llama3_q4_companion_names() {
+    let nm = WeightNameMap::for_family(ModelFamily::Llama3);
+    assert_eq!(
+        nm.lookup(TensorId::LayerQProjQ4Weight(12)),
+        "model.layers.12.self_attn.q_proj.weight.q4_weight"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::LayerQProjQ4Scale(12)),
+        "model.layers.12.self_attn.q_proj.weight.q4_scale"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::OutputProjectionQ4Weight),
+        "lm_head.weight.q4_weight"
+    );
+    assert_eq!(
+        nm.lookup(TensorId::OutputProjectionQ4Scale),
+        "lm_head.weight.q4_scale"
+    );
+}
