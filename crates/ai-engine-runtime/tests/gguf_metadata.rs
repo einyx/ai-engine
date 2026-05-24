@@ -1,4 +1,4 @@
-use ai_engine_runtime::gguf::metadata::{parse_kv, parse_string, GgufValue};
+use ai_engine_runtime::gguf::metadata::{parse_kv, parse_string, GgufArray, GgufValue};
 
 #[test]
 fn parses_gguf_string() {
@@ -40,6 +40,33 @@ fn parses_string_kv() {
     match v {
         GgufValue::String(s) => assert_eq!(s, "toy-llm"),
         _ => panic!("wrong type"),
+    }
+}
+
+#[test]
+fn parse_array_handles_i32_elements() {
+    // key="k", type=9 (ARRAY), elem_type=5 (I32), count=3, values: -1, 0, 7
+    let mut bytes = Vec::new();
+    // key: length=1, "k"
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    bytes.extend_from_slice(b"k");
+    // value type: 9 = ARRAY
+    bytes.extend_from_slice(&9u32.to_le_bytes());
+    // array header: elem_type=5 (i32), count=3
+    bytes.extend_from_slice(&5u32.to_le_bytes());
+    bytes.extend_from_slice(&3u64.to_le_bytes());
+    // three i32 values: -1, 0, 7
+    bytes.extend_from_slice(&(-1i32).to_le_bytes());
+    bytes.extend_from_slice(&0i32.to_le_bytes());
+    bytes.extend_from_slice(&7i32.to_le_bytes());
+
+    let (k, v, consumed) = parse_kv(&bytes).unwrap();
+    assert_eq!(k, "k");
+    // key: 8+1=9, type: 4, array header: 12, elements: 3*4=12 → total 37
+    assert_eq!(consumed, 9 + 4 + 12 + 12);
+    match v {
+        GgufValue::Array(GgufArray::I32(vals)) => assert_eq!(vals, vec![-1, 0, 7]),
+        other => panic!("expected Array(I32(...)), got {:?}", other),
     }
 }
 

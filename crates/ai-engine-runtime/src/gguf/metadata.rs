@@ -19,6 +19,7 @@ pub enum GgufValue {
 
 #[derive(Debug, Clone)]
 pub enum GgufArray {
+    I32(Vec<i32>),
     U32(Vec<u32>),
     U64(Vec<u64>),
     F32(Vec<f32>),
@@ -132,6 +133,15 @@ fn parse_array(bytes: &[u8]) -> anyhow::Result<(GgufValue, usize)> {
                 cursor += 4;
             }
             Ok((GgufValue::Array(GgufArray::U32(out)), cursor))
+        }
+        5 => {
+            let mut out = Vec::with_capacity(count);
+            for _ in 0..count {
+                let buf = take(&bytes[cursor..], 4)?;
+                out.push(i32::from_le_bytes(buf.try_into().unwrap()));
+                cursor += 4;
+            }
+            Ok((GgufValue::Array(GgufArray::I32(out)), cursor))
         }
         10 => {
             let mut out = Vec::with_capacity(count);
