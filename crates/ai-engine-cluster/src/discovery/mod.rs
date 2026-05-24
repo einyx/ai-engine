@@ -12,4 +12,5 @@ pub mod discover;
 pub mod txt;
 
 pub use announce::Announcer;
+pub use discover::{discover_workers, DiscoveredWorker};
 pub use txt::{TxtRecords, SERVICE_TYPE};
