@@ -370,3 +370,29 @@ Known limitations (still deferred):
   would be substantially faster on GPU backends.
 - Activations stay f32.
 - Per-group symmetric only; no zero-point variants.
+
+### v0.3.0-alpha.3 — GGUF Q4_0 reader
+
+ai-engine v0.3.0-alpha.3 reads GGUF (the llama.cpp checkpoint format) directly.
+Currently supports v3 files with the Q4_0 quantization type for Linear weights,
+plus F32 / F16 / BF16 for boundary tensors (embeddings, layernorms).
+
+Implementation:
+- Native `LinearWeight::Q4Gguf` variant that preserves GGUF's exact block layout
+  (32 weights per block, f16 scale + 16 bytes of biased nibbles, low half =
+  block indices 0..16, high half = 16..32).
+- GGUF→HF tensor name translation built in (`blk.N.attn_q.weight` → standard HF).
+- `load_gguf` entry point alongside the existing safetensors loader.
+- Toy fixture compresses 3.5× over bf16.
+
+Use:
+```
+ai_engine_runtime::loader::load_gguf::<B>(path, &cfg, 0..cfg.n_layers, true, true, &dev)
+```
+
+Known limitations:
+- Only Q4_0 + F32 + F16 + BF16 are decoded. Q4_1, Q4_K, Q5_*, Q6_K, Q8_0,
+  IQ_* are deferred to Plan 8.
+- The GGUF reader doesn't yet wire into the TOML config — there's no
+  `model.gguf` path in `[cluster.model]`. Operators use `load_gguf` from
+  code or extend `build_app_state` themselves. Plan 9 wires this.
