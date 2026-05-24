@@ -1,4 +1,5 @@
 use crate::capability::Capability;
+use crate::discovery::DiscoveredWorker;
 use crate::partition::{auto_partition, manual_partition, PartitionManifest};
 use crate::protocol::codec::{decode, encode};
 use crate::protocol::control::{LeaderToWorker, WorkerToLeader};
@@ -33,6 +34,17 @@ pub struct WorkerEndpoint {
     pub fingerprint: String,
 }
 
+impl WorkerEndpoint {
+    /// Build a WorkerEndpoint from an mDNS-discovered worker.
+    pub fn from_discovered(d: DiscoveredWorker) -> Self {
+        Self {
+            node_id: d.node_id,
+            addr: d.addr,
+            fingerprint: d.fingerprint,
+        }
+    }
+}
+
 /// Inputs to `ClusterLeader::start`.
 #[derive(Debug, Clone)]
 pub struct LeaderConfig {
@@ -47,6 +59,34 @@ pub struct LeaderConfig {
     /// Optional explicit partition. When `Some`, bypasses `auto_partition`
     /// and uses `manual_partition` with the provided node/range pairs.
     pub partition_override: Option<Vec<(String, Range<usize>)>>,
+}
+
+impl LeaderConfig {
+    /// Build a LeaderConfig where worker endpoints come from mDNS discovery
+    /// rather than static TOML entries.
+    pub fn from_discovered(
+        cluster_id: impl Into<String>,
+        leader_node_id: impl Into<String>,
+        model_id: impl Into<String>,
+        n_layers: usize,
+        workers: Vec<DiscoveredWorker>,
+        partition_override: Option<Vec<(String, Range<usize>)>>,
+    ) -> Self {
+        Self {
+            cluster_id: cluster_id.into(),
+            leader_node_id: leader_node_id.into(),
+            model_id: model_id.into(),
+            n_layers,
+            layer_bytes: 256 * 1024,
+            embed_output_bytes: 256 * 1024,
+            per_node_overhead: 64 * 1024,
+            workers: workers
+                .into_iter()
+                .map(WorkerEndpoint::from_discovered)
+                .collect(),
+            partition_override,
+        }
+    }
 }
 
 /// Per-worker connection state owned by the leader after the join handshake.
