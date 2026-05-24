@@ -282,7 +282,8 @@ stages = ["auth", "model_route", "forward", "log"]
         .json(&serde_json::json!({
             "model": "real-llama3",
             "messages": [{"role": "user", "content": "Hello, who are you?"}],
-            "max_tokens": 5
+            "temperature": 0.0,
+            "max_tokens": 40
         }))
         .send()
         .expect("POST chat completion");

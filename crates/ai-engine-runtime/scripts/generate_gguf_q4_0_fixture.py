@@ -32,6 +32,14 @@ GGML_F32, GGML_F16, GGML_Q4_0, GGML_BF16 = 0, 1, 2, 30
 Q4_0_BLOCK = 32
 Q4_0_BYTES_PER_BLOCK = 18
 
+# Patterns for projections that llama.cpp permutes during HF→GGUF conversion.
+# We replicate `_reverse_hf_permute` here so the toy fixture matches real
+# llama.cpp-converted GGUFs (the loader's unpermute_qk then undoes this).
+QK_PERMUTE_PATTERNS = [
+    "self_attn.q_proj.weight",
+    "self_attn.k_proj.weight",
+]
+
 LINEAR_PATTERNS = [
     "self_attn.q_proj.weight",
     "self_attn.k_proj.weight",
@@ -68,6 +76,27 @@ def hf_to_gguf_name(name: str) -> str:
             "mlp.down_proj.weight": f"blk.{i}.ffn_down.weight",
         }[rest]
     raise ValueError(f"unhandled tensor name: {name}")
+
+def reverse_hf_permute(w: np.ndarray, n_head: int) -> np.ndarray:
+    """Replicate llama.cpp's _reverse_hf_permute.
+
+    Input `w` has HF shape [out=n_head*head_dim, in=hidden].
+    The permutation interleaves pairs within each head's rows so that
+    ggml's interleaved-pair RoPE convention aligns with the stored layout.
+
+        w[out, in] -> reshape[n_head, 2, head_dim/2, in]
+                   -> swapaxes(1, 2)           -> [n_head, head_dim/2, 2, in]
+                   -> reshape[n_head*head_dim, in]
+    """
+    out_dim, in_dim = w.shape
+    head_dim = out_dim // n_head
+    assert head_dim % 2 == 0, f"head_dim {head_dim} must be even"
+    return (
+        w.reshape(n_head, 2, head_dim // 2, in_dim)
+         .swapaxes(1, 2)
+         .reshape(out_dim, in_dim)
+    )
+
 
 def quantize_q4_0(w: np.ndarray) -> bytes:
     """Quantize a 1D f32 array (length multiple of 32) into Q4_0 blocks.
@@ -223,6 +252,16 @@ for hf_name, t in src.items():
     gguf_name = hf_to_gguf_name(hf_name)
     arr = t.to(torch.float32).numpy()
     if should_quantize(hf_name):
+        # Apply llama.cpp's _reverse_hf_permute to q/k projections so the toy
+        # fixture matches real llama.cpp-converted GGUFs. The loader's
+        # unpermute_qk undoes this at load time.
+        if any(p in hf_name for p in QK_PERMUTE_PATTERNS):
+            # Determine n_head from the config: q_proj uses n_heads, k_proj uses n_kv_heads.
+            if "q_proj" in hf_name:
+                n_head = cfg["num_attention_heads"]
+            else:
+                n_head = cfg["num_key_value_heads"]
+            arr = reverse_hf_permute(arr, n_head)
         # GGUF stores tensors flat-column-major over [in, out].
         # arr has HF shape [out, in]; arr.flatten(C-order) yields
         # (out0_in0, out0_in1, ..., out0_in_last, out1_in0, ...)

@@ -386,6 +386,55 @@ fn load_linear_weight<B: Backend>(
     }
 }
 
+/// Apply the inverse of llama.cpp's `_reverse_hf_permute` to a Q or K weight.
+///
+/// llama.cpp's `convert-hf-to-gguf.py` permutes q_proj and k_proj weights when
+/// converting HuggingFace safetensors → GGUF, to match ggml's interleaved-pair
+/// RoPE rotation convention. Our split-halves RoPE matches HF's convention, so
+/// we must undo that permutation after dequantizing.
+///
+/// `w` is `LinearWeight::Q4Gguf` in math order `[hidden, n_heads * head_dim]`
+/// (GGUF's native `[in, out]` convention). After dequantization and unpermuting,
+/// this returns `LinearWeight::Dense` in HF `[out, in]` order so that the
+/// caller's `ensure_math_order()` (which swaps Dense to `[in, out]`) produces
+/// the correct layout for the `x @ W` matmul.
+///
+/// The permutation and its inverse are both:
+///   `[hidden, n_heads, 2, head_dim/2]` → `swap_dims(2, 3)` → `[hidden, n_heads, head_dim/2, 2]`
+/// (it is self-inverse), followed by a reshape back to `[hidden, n_heads * head_dim]`.
+fn unpermute_qk<B: Backend>(
+    w: LinearWeight<B>,
+    n_heads_or_kv: usize,
+    head_dim: usize,
+) -> LinearWeight<B> {
+    // Dequantize to Dense — the permutation requires element-level reshaping.
+    let t: Tensor<B, 2> = match w {
+        LinearWeight::Q4Gguf(q) => q.dequantize(),
+        LinearWeight::Dense(t) => t,
+        LinearWeight::Quantized(q) => q.dequantize(),
+        LinearWeight::Q4(q) => q.dequantize(),
+    };
+    let [hidden, out] = t.dims();
+    assert_eq!(
+        out,
+        n_heads_or_kv * head_dim,
+        "unpermute_qk: out dim {out} != n_heads_or_kv({n_heads_or_kv}) * head_dim({head_dim})"
+    );
+    assert!(head_dim % 2 == 0, "unpermute_qk: head_dim {head_dim} must be even");
+    // Undo llama.cpp's interleaved-pair layout.
+    // After dequantize, `t` is [hidden, n_heads*head_dim] in ggml's permuted order.
+    // ggml permuted order for the out-dim: [n_heads, head_dim/2, 2] (pairs of positions).
+    // HF order for the out-dim:            [n_heads, 2, head_dim/2] (first/second halves).
+    // Inverse: reshape to [hidden, n_heads, head_dim/2, 2], swap dims 2 and 3
+    // → [hidden, n_heads, 2, head_dim/2], then reshape to [hidden, n_heads*head_dim].
+    let unpermuted: Tensor<B, 2> = t
+        .reshape([hidden, n_heads_or_kv, head_dim / 2, 2])
+        .swap_dims(2, 3)
+        .reshape([hidden, n_heads_or_kv * head_dim]);
+    // Return in HF [out, in] order so ensure_math_order() yields [in, out].
+    LinearWeight::Dense(unpermuted.swap_dims(0, 1))
+}
+
 /// Alignment for the tensor-data section of a GGUF file. The format spec
 /// allows `general.alignment` metadata to override this, but virtually all
 /// real-world files use the default of 32 bytes.
@@ -516,12 +565,28 @@ pub fn load_gguf<B: Backend>(
         None
     };
 
+    // For Llama3 models, llama.cpp's converter applies _reverse_hf_permute to
+    // q_proj and k_proj. Undo that permutation so our split-halves RoPE works.
+    let needs_qk_unpermute = cfg.family == crate::config::ModelFamily::Llama3;
+
     let mut layers = Vec::with_capacity(layer_range.len());
     for i in layer_range.clone() {
+        let q_raw = load_lin(&format!("model.layers.{i}.self_attn.q_proj.weight"))?;
+        let k_raw = load_lin(&format!("model.layers.{i}.self_attn.k_proj.weight"))?;
+        let q_proj = if needs_qk_unpermute {
+            unpermute_qk::<B>(q_raw, cfg.n_heads, cfg.head_dim)
+        } else {
+            q_raw
+        };
+        let k_proj = if needs_qk_unpermute {
+            unpermute_qk::<B>(k_raw, cfg.n_kv_heads, cfg.head_dim)
+        } else {
+            k_raw
+        };
         layers.push(LayerWeights {
             attn_norm: load_1d(&format!("model.layers.{i}.input_layernorm.weight"))?,
-            q_proj: load_lin(&format!("model.layers.{i}.self_attn.q_proj.weight"))?,
-            k_proj: load_lin(&format!("model.layers.{i}.self_attn.k_proj.weight"))?,
+            q_proj,
+            k_proj,
             v_proj: load_lin(&format!("model.layers.{i}.self_attn.v_proj.weight"))?,
             o_proj: load_lin(&format!("model.layers.{i}.self_attn.o_proj.weight"))?,
             ffn_norm: load_1d(&format!(

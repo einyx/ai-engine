@@ -25,11 +25,17 @@ fn load_gguf_fixture_produces_q4_gguf_weights() {
     .unwrap();
     assert_eq!(weights.layers.len(), cfg.n_layers);
     for (i, layer) in weights.layers.iter().enumerate() {
+        // q_proj and k_proj are dequantized and unpermuted at load time for
+        // Llama3 GGUFs (to undo llama.cpp's _reverse_hf_permute). They arrive
+        // as Dense; all other linear weights remain Q4Gguf.
         assert!(
-            matches!(layer.q_proj, LinearWeight::Q4Gguf(_)),
-            "layer {i} q_proj should be Q4Gguf"
+            matches!(layer.q_proj, LinearWeight::Dense(_)),
+            "layer {i} q_proj should be Dense (unpermuted)"
         );
-        assert!(matches!(layer.k_proj, LinearWeight::Q4Gguf(_)));
+        assert!(
+            matches!(layer.k_proj, LinearWeight::Dense(_)),
+            "layer {i} k_proj should be Dense (unpermuted)"
+        );
         assert!(matches!(layer.v_proj, LinearWeight::Q4Gguf(_)));
         assert!(matches!(layer.o_proj, LinearWeight::Q4Gguf(_)));
         assert!(matches!(layer.ffn_gate, LinearWeight::Q4Gguf(_)));

@@ -45,9 +45,12 @@ fn dispatches_gguf_path_to_load_gguf() {
         &dev,
     )
     .unwrap();
-    // Toy GGUF fixture has Q4_0 Linears.
+    // q_proj and k_proj are unpermuted at load time for Llama3 GGUFs, so they
+    // arrive as Dense. Other linear weights remain Q4Gguf.
     for layer in &weights.layers {
-        assert!(matches!(layer.q_proj, LinearWeight::Q4Gguf(_)));
+        assert!(matches!(layer.q_proj, LinearWeight::Dense(_)));
+        assert!(matches!(layer.k_proj, LinearWeight::Dense(_)));
+        assert!(matches!(layer.v_proj, LinearWeight::Q4Gguf(_)));
     }
 }
 

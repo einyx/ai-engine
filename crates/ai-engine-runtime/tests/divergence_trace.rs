@@ -222,7 +222,7 @@ fn per_layer_activation_divergence_trace() {
         .expect("failed to build GGUF model");
 
     // -- Build token_ids tensor ---------------------------------------------
-    let ids_to_use = if st_ids == gg_ids { st_ids.clone() } else { st_ids.clone() };
+    let ids_to_use = st_ids.clone();
     let ids_i32: Vec<i32> = ids_to_use.iter().map(|x| *x as i32).collect();
     let seq_len = ids_i32.len();
     let token_ids =
