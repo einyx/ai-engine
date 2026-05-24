@@ -168,9 +168,13 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
                         .collect::<Result<Vec<_>, _>>()?
                 };
 
-            let model_cfg = ai_engine_runtime::config::ModelConfig::from_file(
-                std::path::Path::new(&cluster_cfg.model.config_path),
-            )?;
+            let weights_path = std::path::PathBuf::from(&cluster_cfg.model.weights_path);
+            let model_cfg = match &cluster_cfg.model.config_path {
+                Some(p) => ai_engine_runtime::config::ModelConfig::from_file(
+                    std::path::Path::new(p),
+                )?,
+                None => ai_engine_runtime::config::ModelConfig::from_gguf_file(&weights_path)?,
+            };
             let n_layers = model_cfg.n_layers;
             let partition_override = if cluster_cfg.partition_override.is_empty() {
                 None
@@ -195,15 +199,17 @@ pub async fn build_app_state(cfg: &Config, node_id: &str) -> anyhow::Result<Arc<
                 partition_override,
             };
             let leader = ai_engine_cluster::leader::ClusterLeader::start(&identity, lcfg).await?;
-            let tokenizer =
-                ai_engine_tokenizer::HfTokenizer::from_path(&cluster_cfg.model.tokenizer_path)?;
+            let tokenizer = match &cluster_cfg.model.tokenizer_path {
+                Some(p) => Arc::new(ai_engine_tokenizer::HfTokenizer::from_path(p)?),
+                None => Arc::new(ai_engine_runtime::load_tokenizer_from_gguf(&weights_path)?),
+            };
             // Plan 3 simplification: workers cover all layers; leader hosts none.
             let leader_layers = 0..0;
             let state = ai_engine_cluster::provider::LeaderState {
                 leader: Arc::new(leader),
                 model_cfg,
-                model_path: std::path::PathBuf::from(&cluster_cfg.model.weights_path),
-                tokenizer: Arc::new(tokenizer),
+                model_path: weights_path,
+                tokenizer,
                 leader_layers,
             };
             // Wire the cluster under exactly one [[provider]] entry referencing

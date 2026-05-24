@@ -59,8 +59,11 @@ pub async fn run_worker(
     let _announcer = Announcer::register(ann_ip, bind.port(), &ann_host, txt)?;
     tracing::info!(node_id = %node_id, "ai-engine worker announcing on mDNS");
 
-    let model_cfg = ModelConfig::from_file(std::path::Path::new(&cluster.model.config_path))?;
     let model_path: std::path::PathBuf = (&cluster.model.weights_path).into();
+    let model_cfg = match &cluster.model.config_path {
+        Some(p) => ModelConfig::from_file(std::path::Path::new(p))?,
+        None => ModelConfig::from_gguf_file(&model_path)?,
+    };
 
     let backend = match me.backend.as_str() {
         "cpu" => BackendKind::Cpu,
