@@ -10,3 +10,5 @@
 pub mod announce;
 pub mod discover;
 pub mod txt;
+
+pub use txt::{TxtRecords, SERVICE_TYPE};
