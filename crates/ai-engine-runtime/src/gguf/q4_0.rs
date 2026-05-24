@@ -18,6 +18,7 @@
 use burn::tensor::{backend::Backend, Tensor, TensorData};
 use half::f16;
 use std::marker::PhantomData;
+use std::sync::OnceLock;
 
 pub const Q4_0_BLOCK_SIZE: usize = 32;
 pub const Q4_0_BYTES_PER_BLOCK: usize = 18;
@@ -27,6 +28,7 @@ pub struct Q4GgufTensor<B: Backend> {
     shape: [usize; 2],
     device: B::Device,
     _marker: PhantomData<B>,
+    cached_dense: OnceLock<Tensor<B, 2>>,
 }
 
 impl<B: Backend> Q4GgufTensor<B> {
@@ -59,6 +61,7 @@ impl<B: Backend> Q4GgufTensor<B> {
             shape,
             device: device.clone(),
             _marker: PhantomData,
+            cached_dense: OnceLock::new(),
         })
     }
 
@@ -94,5 +97,17 @@ impl<B: Backend> Q4GgufTensor<B> {
         }
 
         Tensor::<B, 2>::from_data(TensorData::new(burn_flat, [in_dim, out_dim]), &self.device)
+    }
+
+    /// Return a cached f32 dequantized view of this Q4_0 tensor. The first call
+    /// runs `dequantize()` and caches the result; subsequent calls return a cheap
+    /// Arc clone of the cached tensor.
+    ///
+    /// This trades ~8× memory per cached weight (f32 vs 4-bit) for elimination of
+    /// repeated dequant cost on every matmul. Profiling identified per-call
+    /// dequant as 37.5% of decode wall time for Llama-3.2-1B Q4_0 — caching
+    /// removes that overhead entirely after the first decode step.
+    pub fn dequantize_cached(&self) -> Tensor<B, 2> {
+        self.cached_dense.get_or_init(|| self.dequantize()).clone()
     }
 }

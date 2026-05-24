@@ -3,6 +3,26 @@ use ai_engine_runtime::gguf::q4_0::Q4GgufTensor;
 type B = burn_ndarray::NdArray;
 
 #[test]
+fn q4_0_dequant_cached_matches_uncached() {
+    // Use the same hand-built block as q4_0_decode_one_block_known_values.
+    let scale_f16_bits: u16 = half::f16::from_f32(0.5).to_bits();
+    let mut block = Vec::with_capacity(18);
+    block.extend_from_slice(&scale_f16_bits.to_le_bytes());
+    block.push(0x1F);
+    block.resize(2 + 16, 0x88);
+
+    let dev = Default::default();
+    let t = Q4GgufTensor::<B>::from_blocks(block, [32, 1], &dev).unwrap();
+
+    let v1: Vec<f32> = t.dequantize_cached().into_data().to_vec().unwrap();
+    let v2: Vec<f32> = t.dequantize_cached().into_data().to_vec().unwrap();
+    let v_ref: Vec<f32> = t.dequantize().into_data().to_vec().unwrap();
+
+    assert_eq!(v1, v_ref, "first cached dequant must equal direct dequant");
+    assert_eq!(v1, v2, "second cached dequant must equal first");
+}
+
+#[test]
 fn q4_0_decode_one_block_known_values() {
     // Build one Q4_0 block by hand. 18 bytes per block: f16 scale + 16 bytes of nibbles.
     // Scale = 0.5 (encoded as f16).

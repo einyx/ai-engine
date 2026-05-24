@@ -32,7 +32,7 @@ impl<B: Backend> LinearWeight<B> {
             Self::Dense(w) => x.matmul(w.clone().unsqueeze()),
             Self::Quantized(q) => x.matmul(q.dequantize().unsqueeze()),
             Self::Q4(q) => x.matmul(q.dequantize().unsqueeze()),
-            Self::Q4Gguf(q) => x.matmul(q.dequantize().unsqueeze()),
+            Self::Q4Gguf(q) => x.matmul(q.dequantize_cached().unsqueeze()),
         }
     }
 
