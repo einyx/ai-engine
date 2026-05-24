@@ -95,6 +95,7 @@ pub fn load_range<B: Backend>(
         match load_linear_weight::<B>(&st, &nm, weight_id, scale_id, device)? {
             LinearWeight::Dense(t) => Ok(t),
             LinearWeight::Quantized(q) => Ok(q.dequantize()),
+            LinearWeight::Q4(q) => Ok(q.dequantize()),
         }
     };
 
