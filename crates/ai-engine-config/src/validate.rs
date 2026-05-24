@@ -14,8 +14,27 @@ pub fn validate(cfg: &Config) -> anyhow::Result<()> {
         if !ids.insert(&p.id) {
             anyhow::bail!("duplicate provider id `{}`", p.id);
         }
-        if !matches!(p.kind.as_str(), "openai" | "anthropic" | "local-cluster") {
-            anyhow::bail!("unknown provider kind `{}` (provider `{}`); expected `openai`, `anthropic`, or `local-cluster`", p.kind, p.id);
+        if !matches!(p.kind.as_str(), "openai" | "anthropic" | "local-cluster" | "candle-local") {
+            anyhow::bail!("unknown provider kind `{}` (provider `{}`); expected `openai`, `anthropic`, `local-cluster`, or `candle-local`", p.kind, p.id);
+        }
+    }
+
+    // candle-local provider validation
+    for p in &cfg.providers {
+        if p.kind == "candle-local" {
+            if let Some(ps) = p.pool_size {
+                if ps == 0 {
+                    anyhow::bail!("provider '{}': pool_size must be >= 1", p.id);
+                }
+            }
+            let weights = p.weights_path.as_deref().unwrap_or("");
+            if !weights.ends_with(".gguf") {
+                anyhow::bail!(
+                    "provider '{}': candle-local requires a .gguf weights_path, got '{}'",
+                    p.id,
+                    weights
+                );
+            }
         }
     }
 

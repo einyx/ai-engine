@@ -604,6 +604,81 @@ stages = ["forward", "log"]
     );
 }
 
+// ── candle-local provider tests ──────────────────────────────────────────────
+
+const CANDLE_BASE: &str = r#"
+[server]
+bind = "127.0.0.1:0"
+
+[auth]
+mode = "passthrough"
+
+[[route]]
+match = { model = "llama" }
+provider = "local"
+
+[pipeline."/v1/chat/completions"]
+stages = ["forward", "log"]
+"#;
+
+fn candle_provider_toml(extra: &str) -> String {
+    format!(
+        r#"{}
+[[provider]]
+id = "local"
+kind = "candle-local"
+weights_path = "/models/llama.gguf"
+{}
+"#,
+        CANDLE_BASE, extra
+    )
+}
+
+#[test]
+fn parse_candle_local_model_with_defaults() {
+    let toml = candle_provider_toml("");
+    let cfg = Config::from_str(&toml).unwrap();
+    let p = &cfg.providers[0];
+    assert_eq!(p.kind, "candle-local");
+    assert_eq!(p.weights_path.as_deref(), Some("/models/llama.gguf"));
+    assert!(p.device.is_none());
+    assert!(p.pool_size.is_none());
+}
+
+#[test]
+fn parse_candle_local_model_explicit() {
+    let toml = candle_provider_toml(r#"device = "cuda:0"
+pool_size = 4"#);
+    let cfg = Config::from_str(&toml).unwrap();
+    let p = &cfg.providers[0];
+    assert_eq!(p.device.as_deref(), Some("cuda:0"));
+    assert_eq!(p.pool_size, Some(4));
+}
+
+#[test]
+fn candle_local_rejects_zero_pool_size() {
+    let toml = candle_provider_toml("pool_size = 0");
+    let err = Config::from_str(&toml).unwrap_err().to_string();
+    assert!(err.to_lowercase().contains("pool_size"), "got: {err}");
+}
+
+#[test]
+fn candle_local_rejects_non_gguf_weights() {
+    let toml = format!(
+        r#"{}
+[[provider]]
+id = "local"
+kind = "candle-local"
+weights_path = "/models/llama.safetensors"
+"#,
+        CANDLE_BASE
+    );
+    let err = Config::from_str(&toml).unwrap_err().to_string();
+    assert!(err.to_lowercase().contains("gguf"), "got: {err}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[test]
 fn cluster_discover_with_zero_workers_rejected() {
     let toml = r#"

@@ -97,6 +97,16 @@ pub struct Provider {
     /// References a `[[cluster]] id` when `kind = "local-cluster"`.
     #[serde(default)]
     pub cluster: Option<String>,
+    /// Path to model weights file (only for `kind = "candle-local"`).
+    /// Must point to a `.gguf` file.
+    #[serde(default)]
+    pub weights_path: Option<String>,
+    /// Candle device spec (only for `kind = "candle-local"`). auto|cpu|metal|cuda:N.
+    #[serde(default)]
+    pub device: Option<String>,
+    /// Number of model replicas for concurrency (only for `kind = "candle-local"`).
+    #[serde(default)]
+    pub pool_size: Option<usize>,
 }
 fn default_timeout() -> u64 {
     120
