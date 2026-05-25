@@ -12,6 +12,7 @@ metal = ["candle-core/metal", "candle-transformers/metal"]
 
 [dependencies]
 candle-core = { workspace = true }
+candle-nn = { workspace = true }
 candle-transformers = { workspace = true }
 ai-engine-provider = { path = "../ai-engine-provider" }
 ai-engine-tokenizer = { path = "../ai-engine-tokenizer" }
