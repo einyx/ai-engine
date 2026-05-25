@@ -6,3 +6,6 @@
 
 # Python fixture-generation venv (not a runtime dep)
 .venv-fixture/
+
+# Local planning/spec artifacts (not published)
+docs/superpowers/
