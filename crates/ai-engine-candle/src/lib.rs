@@ -6,6 +6,7 @@
 
 pub mod device;
 pub mod model;
+pub mod paged;
 pub mod pool;
 pub mod provider;
 pub mod template;
