@@ -9,7 +9,6 @@ use std::path::Path;
 use crate::paged::arch::ArchConfig;
 use crate::paged::rope::Rope;
 
-#[allow(dead_code)]
 struct Layer {
     attn_q: QMatMul,
     attn_k: QMatMul,
@@ -29,13 +28,9 @@ struct Layer {
 
 pub struct Transformer {
     pub cfg: ArchConfig,
-    #[allow(dead_code)]
     embed: Tensor,
-    #[allow(dead_code)]
     layers: Vec<Layer>,
-    #[allow(dead_code)]
     out_norm: RmsNorm,
-    #[allow(dead_code)]
     lm_head: QMatMul,
     pub rope: Rope,
     pub device: Device,
@@ -117,5 +112,89 @@ impl Transformer {
         }
         let rope = Rope::new(cfg.rope_dim, cfg.rope_freq_base, max_seq, &device)?;
         Ok(Self { cfg, embed, layers, out_norm, lm_head, rope, device })
+    }
+
+    /// Decode/prefill step: one token per row. `token_ids` len == batch.
+    /// `positions[b]` = current global position of row b's new token.
+    /// `seq_lens[b]` = tokens already in the KV pool for row b (before this token).
+    /// `kv`: per-layer KV pools. `alloc`/`tables`: block bookkeeping per row.
+    /// Returns logits (batch, vocab).
+    pub fn decode_step(
+        &self,
+        token_ids: &[u32],
+        positions: &[usize],
+        seq_lens: &[usize],
+        kv: &mut [crate::paged::attention::KvPool],
+        alloc: &crate::paged::block_table::BlockAllocator,
+        tables: &[&crate::paged::block_table::BlockTable],
+    ) -> anyhow::Result<candle_core::Tensor> {
+        use candle_core::Tensor;
+        use candle_nn::Module;
+        use crate::paged::attention::{build_mask, sdpa};
+        let batch = token_ids.len();
+        let (n_head, n_kv, hd) = (self.cfg.head_count, self.cfg.head_count_kv, self.cfg.head_dim);
+
+        let ids = Tensor::new(token_ids, &self.device)?;
+        let mut x = self.embed.index_select(&ids, 0)?; // (batch, embed)
+
+        let pos_vec: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
+        let pos_t = Tensor::new(pos_vec.as_slice(), &self.device)?;
+        let (cos, sin) = self.rope.gather(&pos_t)?; // (batch, rope_dim/2)
+
+        let kv_len = seq_lens.iter().cloned().max().unwrap_or(0) + 1;
+
+        for (li, layer) in self.layers.iter().enumerate() {
+            let residual = x.clone();
+            let xn = layer.attn_norm.forward(&x)?;
+            let mut q = layer.attn_q.forward(&xn)?;
+            let mut k = layer.attn_k.forward(&xn)?;
+            let mut v = layer.attn_v.forward(&xn)?;
+            if let Some(b) = &layer.attn_q_bias { q = q.broadcast_add(b)?; }
+            if let Some(b) = &layer.attn_k_bias { k = k.broadcast_add(b)?; }
+            if let Some(b) = &layer.attn_v_bias { v = v.broadcast_add(b)?; }
+            let mut q = q.reshape((batch, n_head, hd))?;
+            let mut k = k.reshape((batch, n_kv, hd))?;
+            let v = v.reshape((batch, n_kv, hd))?;
+            if let Some(qn) = &layer.attn_q_norm { q = qn.forward(&q)?; }
+            if let Some(kn) = &layer.attn_k_norm { k = kn.forward(&k)?; }
+            let q = crate::paged::rope::apply_rope(&q, &cos, &sin)?;
+            let k = crate::paged::rope::apply_rope(&k, &cos, &sin)?;
+
+            let mut k_rows = Vec::with_capacity(batch);
+            let mut v_rows = Vec::with_capacity(batch);
+            for b in 0..batch {
+                let kb = k.narrow(0, b, 1)?.reshape((1, n_kv, hd))?;
+                let vb = v.narrow(0, b, 1)?.reshape((1, n_kv, hd))?;
+                kv[li].write(alloc, tables[b], seq_lens[b], &kb, &vb)?;
+                let (gk, gv) = kv[li].gather_seq(tables[b], seq_lens[b] + 1)?;
+                let pad = kv_len - (seq_lens[b] + 1);
+                let (gk, gv) = if pad > 0 {
+                    (gk.pad_with_zeros(0, 0, pad)?, gv.pad_with_zeros(0, 0, pad)?)
+                } else { (gk, gv) };
+                k_rows.push(gk.unsqueeze(0)?);
+                v_rows.push(gv.unsqueeze(0)?);
+            }
+            let k_all = Tensor::cat(&k_rows, 0)?.transpose(1, 2)?; // (batch, n_kv, kv_len, hd)
+            let v_all = Tensor::cat(&v_rows, 0)?.transpose(1, 2)?;
+            let q4 = q.unsqueeze(2)?; // (batch, n_head, 1, hd)
+
+            let valid_lens: Vec<usize> = seq_lens.iter().map(|s| s + 1).collect();
+            let mask = build_mask(&valid_lens, positions, kv_len, &self.device)?;
+
+            let attn = sdpa(&q4, &k_all, &v_all, &mask, n_head, n_kv)?; // (batch,1,n_head*hd)
+            let attn = attn.reshape((batch, n_head * hd))?;
+            let attn = layer.attn_o.forward(&attn)?;
+            x = (residual + attn)?;
+
+            let residual = x.clone();
+            let xn = layer.ffn_norm.forward(&x)?;
+            let gate = candle_nn::ops::silu(&layer.ffn_gate.forward(&xn)?)?;
+            let up = layer.ffn_up.forward(&xn)?;
+            let mlp = layer.ffn_down.forward(&(gate * up)?)?;
+            x = (residual + mlp)?;
+        }
+        let x = self.out_norm.forward(&x)?;
+        let logits = self.lm_head.forward(&x)?; // (batch, vocab)
+        Ok(logits)
     }
 }
