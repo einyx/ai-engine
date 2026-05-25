@@ -213,6 +213,42 @@ impl CandleModel {
     }
 }
 
+/// Read GGUF metadata (eos/bos token ids, chat template) WITHOUT loading model
+/// weights. Returns `(eos_token_id, chat_template, bos_token_str, eos_token_str)`.
+pub fn read_gguf_meta(
+    gguf_path: &Path,
+    tokenizer: &HfTokenizer,
+) -> anyhow::Result<(u32, Option<String>, String, String)> {
+    let mut file = std::fs::File::open(gguf_path)
+        .with_context(|| format!("open {}", gguf_path.display()))?;
+    let content = gguf_file::Content::read(&mut file)
+        .map_err(|e| anyhow::anyhow!("read gguf {}: {e}", gguf_path.display()))?;
+
+    let eos_token_id = content
+        .metadata
+        .get("tokenizer.ggml.eos_token_id")
+        .and_then(|v| v.to_u32().ok())
+        .context("gguf missing tokenizer.ggml.eos_token_id")?;
+
+    let bos_token_id = content
+        .metadata
+        .get("tokenizer.ggml.bos_token_id")
+        .and_then(|v| v.to_u32().ok());
+
+    let chat_template = content
+        .metadata
+        .get("tokenizer.chat_template")
+        .and_then(|v| v.to_string().ok())
+        .cloned();
+
+    let bos_token = bos_token_id
+        .and_then(|id| tokenizer.decode(&[id]).ok())
+        .unwrap_or_default();
+    let eos_token = tokenizer.decode(&[eos_token_id]).unwrap_or_default();
+
+    Ok((eos_token_id, chat_template, bos_token, eos_token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

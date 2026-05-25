@@ -2,11 +2,9 @@
 //! candle-backed native-quantized local GPU inference path
 //! (`kind = "candle-local"`).
 //!
-//! Holds an `Arc<ReplicaPool>` of independently-loaded GGUF replicas plus a
-//! shared `Arc<HfTokenizer>`. `chat` acquires a replica and runs the blocking
-//! autoregressive loop inside `block_in_place`. `chat_stream` clones the pool
-//! and tokenizer into a spawned task that streams per-token deltas over an
-//! mpsc channel, mirroring the cluster provider's SSE chunk shape.
+//! Supports two backends:
+//! - `Backend::Pool`: pool of N replicas (original path, `engine = "pool"`).
+//! - `Backend::Paged`: continuous-batching paged engine (default, `engine = "paged"`).
 
 use ai_engine_provider::{
     error::ProviderError,
@@ -20,11 +18,20 @@ use std::sync::Arc;
 
 use crate::model::GenParams;
 use crate::pool::ReplicaPool;
+use crate::paged::engine::{Engine, EngineConfig, GenRequest};
+
+enum Backend {
+    Pool(Arc<ReplicaPool>),
+    Paged(Arc<Engine>),
+}
 
 pub struct CandleProvider {
     id: String,
-    pool: Arc<ReplicaPool>,
+    backend: Backend,
     tokenizer: Arc<HfTokenizer>,
+    chat_template: Option<String>,
+    bos_token: String,
+    eos_token: String,
 }
 
 impl CandleProvider {
@@ -39,6 +46,8 @@ impl CandleProvider {
         let device = crate::device::resolve_device(device_spec)?;
         let tokenizer =
             Arc::new(ai_engine_runtime::load_tokenizer_from_gguf(gguf_path)?);
+        let (_, chat_template, bos_token, eos_token) =
+            crate::model::read_gguf_meta(gguf_path, &tokenizer)?;
         let pool = Arc::new(ReplicaPool::new(
             gguf_path,
             device,
@@ -47,9 +56,58 @@ impl CandleProvider {
         )?);
         Ok(Self {
             id: id.into(),
-            pool,
+            backend: Backend::Pool(pool),
             tokenizer,
+            chat_template,
+            bos_token,
+            eos_token,
         })
+    }
+
+    /// Spawn a paged continuous-batching engine for the GGUF at `gguf_path`.
+    pub fn new_paged(
+        id: impl Into<String>,
+        gguf_path: &Path,
+        device_spec: &str,
+        max_num_seqs: usize,
+        block_size: usize,
+        kv_cache_blocks: usize,
+    ) -> anyhow::Result<Self> {
+        let device = crate::device::resolve_device(device_spec)?;
+        let tokenizer =
+            Arc::new(ai_engine_runtime::load_tokenizer_from_gguf(gguf_path)?);
+        let (eos_token_id, chat_template, bos_token, eos_token) =
+            crate::model::read_gguf_meta(gguf_path, &tokenizer)?;
+        let engine = Engine::spawn(
+            gguf_path,
+            device,
+            EngineConfig { max_num_seqs, block_size, kv_cache_blocks, max_seq: 4096, eos_token_id },
+        )?;
+        Ok(Self {
+            id: id.into(),
+            backend: Backend::Paged(engine),
+            tokenizer,
+            chat_template,
+            bos_token,
+            eos_token,
+        })
+    }
+
+    /// Build the prompt for `req` using stored template metadata.
+    fn build_prompt(&self, req: &openai::ChatRequest) -> String {
+        let msgs = to_template_messages(req);
+        match &self.chat_template {
+            Some(t) => {
+                match crate::template::render_chat_template(t, &msgs, &self.bos_token, &self.eos_token) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("chat_template render failed ({e}); falling back to plain prompt");
+                        render_prompt(req)
+                    }
+                }
+            }
+            None => render_prompt(req),
+        }
     }
 }
 
@@ -80,33 +138,50 @@ impl Provider for CandleProvider {
         _creds: &Credentials,
         ctx: &CallCtx,
     ) -> Result<openai::ChatResponse, ProviderError> {
+        let prompt = self.build_prompt(&req);
         let params = GenParams {
             max_tokens: req.max_tokens.unwrap_or(256) as usize,
             temperature: req.temperature.unwrap_or(0.0),
         };
 
-        // Generation is blocking CPU/GPU work. Hold the replica guard across
-        // the blocking call via `block_in_place` so we don't stall the async
-        // runtime's worker thread.
-        let mut guard = self.pool.acquire().await;
-        let prompt = build_prompt(&guard, &req);
-        let mut prompt_tokens = 0usize;
-        let result = tokio::task::block_in_place(|| {
-            let ids = guard.generate(&prompt, &params, |_| {}, &mut prompt_tokens)?;
-            let text = guard.decode(&ids)?;
-            Ok::<_, anyhow::Error>((text, ids.len()))
-        });
-        drop(guard);
-        let (content, completion_tokens) =
-            result.map_err(|e| ProviderError::InvalidResponse(format!("generate: {e}")))?;
-
-        Ok(build_chat_response(
-            &req,
-            ctx,
-            content,
-            prompt_tokens,
-            completion_tokens,
-        ))
+        match &self.backend {
+            Backend::Pool(pool) => {
+                let mut guard = pool.acquire().await;
+                let mut prompt_tokens = 0usize;
+                let result = tokio::task::block_in_place(|| {
+                    let ids = guard.generate(&prompt, &params, |_| {}, &mut prompt_tokens)?;
+                    let text = guard.decode(&ids)?;
+                    Ok::<_, anyhow::Error>((text, ids.len()))
+                });
+                drop(guard);
+                let (content, completion_tokens) =
+                    result.map_err(|e| ProviderError::InvalidResponse(format!("generate: {e}")))?;
+                Ok(build_chat_response(&req, ctx, content, prompt_tokens, completion_tokens))
+            }
+            Backend::Paged(engine) => {
+                let prompt_ids = self.tokenizer.encode(&prompt)
+                    .map_err(|e| ProviderError::InvalidResponse(format!("tokenize: {e}")))?;
+                let prompt_token_count = prompt_ids.len();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                engine.submit(GenRequest {
+                    prompt_ids,
+                    max_tokens: params.max_tokens,
+                    temperature: params.temperature,
+                    tx,
+                });
+                let mut ids: Vec<u32> = Vec::new();
+                while let Some(item) = rx.recv().await {
+                    match item {
+                        Ok(id) => ids.push(id),
+                        Err(e) => return Err(ProviderError::InvalidResponse(format!("paged engine: {e}"))),
+                    }
+                }
+                let completion_tokens = ids.len();
+                let content = self.tokenizer.decode(&ids)
+                    .map_err(|e| ProviderError::InvalidResponse(format!("decode: {e}")))?;
+                Ok(build_chat_response(&req, ctx, content, prompt_token_count, completion_tokens))
+            }
+        }
     }
 
     async fn chat_stream(
@@ -115,6 +190,7 @@ impl Provider for CandleProvider {
         _creds: &Credentials,
         ctx: &CallCtx,
     ) -> Result<EventStream<openai::ChatStreamEvent>, ProviderError> {
+        let prompt = self.build_prompt(&req);
         let params = GenParams {
             max_tokens: req.max_tokens.unwrap_or(256) as usize,
             temperature: req.temperature.unwrap_or(0.0),
@@ -122,95 +198,133 @@ impl Provider for CandleProvider {
 
         let id = format!("chatcmpl-{}", ctx.request_id);
         let model = req.model.clone();
-        let pool = self.pool.clone();
-        let tokenizer = self.tokenizer.clone();
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
+        match &self.backend {
+            Backend::Pool(pool) => {
+                let pool = pool.clone();
+                let tokenizer = self.tokenizer.clone();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
 
-        // Spawn the generation task. It acquires a replica independently of
-        // `&self`'s lifetime, runs the blocking loop, and pushes one decoded
-        // piece per token. Byte-level BPE makes single-token decode lossy, so
-        // we decode the cumulative id vector with the shared tokenizer (not the
-        // guard, which is borrowed mutably by `generate`) and emit only the new
-        // suffix.
-        tokio::spawn(async move {
-            let mut guard = pool.acquire().await;
-            let prompt = build_prompt(&guard, &req);
-            let mut prompt_tokens = 0usize;
-            let result = tokio::task::block_in_place(|| {
-                let mut emitted: Vec<u32> = Vec::new();
-                let mut prev_text = String::new();
-                let mut send_err: Option<String> = None;
-                let ids = guard.generate(
-                    &prompt,
-                    &params,
-                    |tok| {
-                        if send_err.is_some() {
-                            return;
-                        }
-                        emitted.push(tok);
-                        match tokenizer.decode(&emitted) {
-                            Ok(full) => {
-                                if full.len() > prev_text.len() {
-                                    let suffix = full[prev_text.len()..].to_string();
-                                    if !suffix.is_empty() && tx.send(Ok(suffix)).is_err() {
-                                        send_err = Some("receiver dropped".into());
+                tokio::spawn(async move {
+                    let mut guard = pool.acquire().await;
+                    let mut prompt_tokens = 0usize;
+                    let result = tokio::task::block_in_place(|| {
+                        let mut emitted: Vec<u32> = Vec::new();
+                        let mut prev_text = String::new();
+                        let mut send_err: Option<String> = None;
+                        let ids = guard.generate(
+                            &prompt,
+                            &params,
+                            |tok| {
+                                if send_err.is_some() { return; }
+                                emitted.push(tok);
+                                match tokenizer.decode(&emitted) {
+                                    Ok(full) => {
+                                        if full.len() > prev_text.len() {
+                                            let suffix = full[prev_text.len()..].to_string();
+                                            if !suffix.is_empty() && tx.send(Ok(suffix)).is_err() {
+                                                send_err = Some("receiver dropped".into());
+                                            }
+                                            prev_text = full;
+                                        }
                                     }
-                                    prev_text = full;
+                                    Err(e) => send_err = Some(format!("decode: {e}")),
+                                }
+                            },
+                            &mut prompt_tokens,
+                        );
+                        if let Some(e) = send_err { return Err(e); }
+                        ids.map(|_| ()).map_err(|e| format!("generate: {e}"))
+                    });
+                    if let Err(e) = result {
+                        let _ = tx.send(Err(e));
+                    }
+                });
+
+                let stream = async_stream::stream! {
+                    while let Some(item) = rx.recv().await {
+                        match item {
+                            Ok(piece) => {
+                                let raw = serde_json::json!({
+                                    "id": id, "object": "chat.completion.chunk", "model": model,
+                                    "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": serde_json::Value::Null}],
+                                });
+                                yield Ok(openai::ChatStreamEvent { raw });
+                            }
+                            Err(e) => { yield Err(ProviderError::Stream(e)); return; }
+                        }
+                    }
+                    let raw = serde_json::json!({
+                        "id": id, "object": "chat.completion.chunk", "model": model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    });
+                    yield Ok(openai::ChatStreamEvent { raw });
+                };
+                Ok(Box::pin(stream))
+            }
+            Backend::Paged(engine) => {
+                let prompt_ids = self.tokenizer.encode(&prompt)
+                    .map_err(|e| ProviderError::InvalidResponse(format!("tokenize: {e}")))?;
+                let tokenizer = self.tokenizer.clone();
+                let (token_tx, mut token_rx) = tokio::sync::mpsc::unbounded_channel::<Result<u32, String>>();
+                engine.submit(GenRequest {
+                    prompt_ids,
+                    max_tokens: params.max_tokens,
+                    temperature: params.temperature,
+                    tx: token_tx,
+                });
+
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
+                tokio::spawn(async move {
+                    let mut emitted: Vec<u32> = Vec::new();
+                    let mut prev_text = String::new();
+                    while let Some(item) = token_rx.recv().await {
+                        match item {
+                            Ok(tok) => {
+                                emitted.push(tok);
+                                match tokenizer.decode(&emitted) {
+                                    Ok(full) => {
+                                        if full.len() > prev_text.len() {
+                                            let suffix = full[prev_text.len()..].to_string();
+                                            if !suffix.is_empty() && tx.send(Ok(suffix)).is_err() {
+                                                return;
+                                            }
+                                            prev_text = full;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(Err(format!("decode: {e}")));
+                                        return;
+                                    }
                                 }
                             }
-                            Err(e) => send_err = Some(format!("decode: {e}")),
+                            Err(e) => { let _ = tx.send(Err(e)); return; }
                         }
-                    },
-                    &mut prompt_tokens,
-                );
-                if let Some(e) = send_err {
-                    return Err(e);
-                }
-                ids.map(|_| ()).map_err(|e| format!("generate: {e}"))
-            });
-            if let Err(e) = result {
-                let _ = tx.send(Err(e));
-            }
-        });
-
-        let stream = async_stream::stream! {
-            while let Some(item) = rx.recv().await {
-                match item {
-                    Ok(piece) => {
-                        let raw = serde_json::json!({
-                            "id": id,
-                            "object": "chat.completion.chunk",
-                            "model": model,
-                            "choices": [{
-                                "index": 0,
-                                "delta": { "content": piece },
-                                "finish_reason": serde_json::Value::Null,
-                            }],
-                        });
-                        yield Ok(openai::ChatStreamEvent { raw });
                     }
-                    Err(e) => {
-                        yield Err(ProviderError::Stream(e));
-                        return;
-                    }
-                }
-            }
-            // End-of-stream sentinel chunk.
-            let raw = serde_json::json!({
-                "id": id,
-                "object": "chat.completion.chunk",
-                "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop",
-                }],
-            });
-            yield Ok(openai::ChatStreamEvent { raw });
-        };
+                });
 
-        Ok(Box::pin(stream))
+                let stream = async_stream::stream! {
+                    while let Some(item) = rx.recv().await {
+                        match item {
+                            Ok(piece) => {
+                                let raw = serde_json::json!({
+                                    "id": id, "object": "chat.completion.chunk", "model": model,
+                                    "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": serde_json::Value::Null}],
+                                });
+                                yield Ok(openai::ChatStreamEvent { raw });
+                            }
+                            Err(e) => { yield Err(ProviderError::Stream(e)); return; }
+                        }
+                    }
+                    let raw = serde_json::json!({
+                        "id": id, "object": "chat.completion.chunk", "model": model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    });
+                    yield Ok(openai::ChatStreamEvent { raw });
+                };
+                Ok(Box::pin(stream))
+            }
+        }
     }
 }
 
@@ -262,21 +376,6 @@ fn to_template_messages(req: &openai::ChatRequest) -> Vec<crate::template::Templ
             }
         })
         .collect()
-}
-
-/// Build the prompt for `req` using `model`'s embedded chat template, falling
-/// back to the plain `render_prompt` format when no template is present or
-/// rendering fails.
-fn build_prompt(model: &crate::model::CandleModel, req: &openai::ChatRequest) -> String {
-    let msgs = to_template_messages(req);
-    match model.render_with_chat_template(&msgs) {
-        Some(Ok(p)) => p,
-        Some(Err(e)) => {
-            tracing::warn!("chat_template render failed ({e}); falling back to plain prompt");
-            render_prompt(req)
-        }
-        None => render_prompt(req),
-    }
 }
 
 fn render_prompt(req: &openai::ChatRequest) -> String {

@@ -333,10 +333,20 @@ fn build_gateway_app_state(
                     })?;
                     let gguf = std::path::Path::new(weights);
                     let device = p.device.as_deref().unwrap_or("auto");
-                    let pool_size = p.pool_size.unwrap_or(2);
-                    let cp = ai_engine_candle::CandleProvider::new(
-                        &p.id, gguf, device, pool_size,
-                    )?;
+                    let cp = match p.engine.as_deref().unwrap_or("paged") {
+                        "pool" => {
+                            let pool_size = p.pool_size.unwrap_or(2);
+                            ai_engine_candle::CandleProvider::new(&p.id, gguf, device, pool_size)?
+                        }
+                        _ => {
+                            ai_engine_candle::CandleProvider::new_paged(
+                                &p.id, gguf, device,
+                                p.max_num_seqs.unwrap_or(32),
+                                p.block_size.unwrap_or(16),
+                                p.kv_cache_blocks.unwrap_or(4096),
+                            )?
+                        }
+                    };
                     Arc::new(cp) as Arc<dyn Provider>
                 }
                 #[cfg(not(feature = "backend-candle"))]

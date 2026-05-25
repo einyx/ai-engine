@@ -107,6 +107,18 @@ pub struct Provider {
     /// Number of model replicas for concurrency (only for `kind = "candle-local"`).
     #[serde(default)]
     pub pool_size: Option<usize>,
+    /// Engine for candle-local: "paged" (default, continuous batching) or "pool" (replica pool).
+    #[serde(default)]
+    pub engine: Option<String>,
+    /// Paged engine: max concurrent sequences per batch (default 32).
+    #[serde(default)]
+    pub max_num_seqs: Option<usize>,
+    /// Paged engine: KV block size in tokens (default 16).
+    #[serde(default)]
+    pub block_size: Option<usize>,
+    /// Paged engine: KV block pool size, caps total KV memory (default 4096).
+    #[serde(default)]
+    pub kv_cache_blocks: Option<usize>,
 }
 fn default_timeout() -> u64 {
     120
