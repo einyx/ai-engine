@@ -121,11 +121,15 @@ fn run_loop(
             let next = sample::sample(&row, &sample_cfg(s.temperature));
             s.pos += 1;
             s.produced += 1;
-            let stop = next == cfg.eos_token_id || s.produced >= s.max_tokens;
-            if stop {
+            let eos = next == cfg.eos_token_id;
+            let at_limit = s.produced >= s.max_tokens;
+            // Mirror CandleModel: push token unless it is EOS (EOS triggers stop before push).
+            if !eos {
+                let _ = s.tx.send(Ok(next));
+            }
+            if eos || at_limit {
                 alloc.release(&mut s.table);
             } else {
-                let _ = s.tx.send(Ok(next));
                 s.next_token = next;
                 keep.push(s);
             }
@@ -145,19 +149,16 @@ fn prefill(
         let _ = req.tx.send(Err("KV cache exhausted at admission".into()));
         return None;
     }
-    let mut last_logits = None;
-    for (pos, &tok) in req.prompt_ids.iter().enumerate() {
-        let tables = [&table];
-        match model.decode_step(&[tok], &[pos], &[pos], kv, alloc, &tables) {
-            Ok(l) => last_logits = Some(l),
-            Err(e) => {
-                let _ = req.tx.send(Err(format!("prefill: {e}")));
-                alloc.release(&mut table);
-                return None;
-            }
+    // Batch prefill: process the entire prompt as a causal sequence in one shot,
+    // matching candle_transformers' batch forward exactly for numerical parity.
+    let logits = match model.prefill_seq(&req.prompt_ids, &table, kv, alloc) {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = req.tx.send(Err(format!("prefill: {e}")));
+            alloc.release(&mut table);
+            return None;
         }
-    }
-    let logits = last_logits?;
+    };
     let row: Vec<f32> = logits.squeeze(0).and_then(|t| t.to_vec1()).ok()?;
     let next = sample::sample(&row, &sample_cfg(req.temperature));
     let _ = req.tx.send(Ok(next));

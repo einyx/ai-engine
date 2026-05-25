@@ -36,7 +36,9 @@ impl Rope {
 /// per-token (cos, sin) of shape (n_tokens, head_dim/2). Uses the
 /// rotate-half / interleaved convention candle's quantized models use.
 pub fn apply_rope(x: &Tensor, cos: &Tensor, sin: &Tensor) -> candle_core::Result<Tensor> {
-    candle_nn::rotary_emb::rope_i(&x.contiguous()?, cos, sin)
+    // candle_transformers quantized models (qwen2, qwen3, llama) all use the
+    // rotate-half (non-interleaved) convention — match it exactly.
+    candle_nn::rotary_emb::rope(&x.contiguous()?, cos, sin)
 }
 
 #[cfg(test)]

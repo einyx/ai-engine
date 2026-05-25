@@ -53,7 +53,19 @@ impl ArchConfig {
         let head_count_kv = g("attention.head_count_kv")?.to_u32()? as usize;
         let block_count = g("block_count")?.to_u32()? as usize;
         let embedding_length = g("embedding_length")?.to_u32()? as usize;
-        let rope_dim = g("rope.dimension_count")?.to_u32()? as usize;
+        // qwen2 omits rope.dimension_count; fall back to head_dim (= embedding_length / head_count).
+        let head_dim_fallback = content
+            .metadata
+            .get(&format!("{arch}.attention.key_length"))
+            .and_then(|v| v.to_u32().ok())
+            .map(|v| v as usize)
+            .unwrap_or(embedding_length / head_count);
+        let rope_dim = content
+            .metadata
+            .get(&format!("{arch}.rope.dimension_count"))
+            .and_then(|v| v.to_u32().ok())
+            .map(|v| v as usize)
+            .unwrap_or(head_dim_fallback);
         let rms_norm_eps = g("attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
         let rope_freq_base = content
             .metadata

@@ -114,6 +114,103 @@ impl Transformer {
         Ok(Self { cfg, embed, layers, out_norm, lm_head, rope, device })
     }
 
+    /// Batch prefill: process `prompt_ids` (length N) as a causal sequence in one shot.
+    /// Stores all N positions into the KV pool and returns logits for the last token.
+    /// Mirrors candle_transformers' batch forward exactly, giving bit-identical logits.
+    pub fn prefill_seq(
+        &self,
+        prompt_ids: &[u32],
+        table: &crate::paged::block_table::BlockTable,
+        kv: &mut [crate::paged::attention::KvPool],
+        alloc: &crate::paged::block_table::BlockAllocator,
+    ) -> anyhow::Result<candle_core::Tensor> {
+        use candle_core::Tensor;
+        use candle_nn::Module;
+        let n_seq = prompt_ids.len();
+        let (n_head, n_kv, hd) = (self.cfg.head_count, self.cfg.head_count_kv, self.cfg.head_dim);
+
+        let ids = Tensor::new(prompt_ids, &self.device)?;
+        let mut x = self.embed.index_select(&ids, 0)?.unsqueeze(0)?; // (1, N, embed)
+
+        let pos_vec: Vec<u32> = (0..n_seq as u32).collect();
+        let pos_t = Tensor::new(pos_vec.as_slice(), &self.device)?;
+        let (cos, sin) = self.rope.gather(&pos_t)?; // (N, rope_dim/2)
+
+        // Build causal mask: shape (1, 1, N, N), additive, -inf for future.
+        let mut mask_data = vec![0f32; n_seq * n_seq];
+        for i in 0..n_seq {
+            for j in 0..n_seq {
+                if j > i {
+                    mask_data[i * n_seq + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let causal_mask = Tensor::from_vec(mask_data, (1usize, 1usize, n_seq, n_seq), &self.device)?;
+
+        for (li, layer) in self.layers.iter().enumerate() {
+            let residual = x.clone();
+            let xn = layer.attn_norm.forward(&x)?; // (1, N, embed)
+            let mut q = layer.attn_q.forward(&xn)?; // (1, N, n_head*hd)
+            let mut k = layer.attn_k.forward(&xn)?; // (1, N, n_kv*hd)
+            let mut v = layer.attn_v.forward(&xn)?;
+            if let Some(b) = &layer.attn_q_bias { q = q.broadcast_add(b)?; }
+            if let Some(b) = &layer.attn_k_bias { k = k.broadcast_add(b)?; }
+            if let Some(b) = &layer.attn_v_bias { v = v.broadcast_add(b)?; }
+            // Reshape to (1, n_head/n_kv, N, hd) = (batch, heads, seq, hd)
+            let mut q = q.reshape((1usize, n_seq, n_head, hd))?.transpose(1, 2)?; // (1, n_head, N, hd)
+            let mut k = k.reshape((1usize, n_seq, n_kv, hd))?.transpose(1, 2)?;   // (1, n_kv, N, hd)
+            let v = v.reshape((1usize, n_seq, n_kv, hd))?.transpose(1, 2)?;       // (1, n_kv, N, hd)
+            if let Some(qn) = &layer.attn_q_norm { q = qn.forward(&q)?; }
+            if let Some(kn) = &layer.attn_k_norm { k = kn.forward(&k)?; }
+            // RoPE: (1, n_head, N, hd). cos/sin are (N, hd/2) — 2D, compatible with rope().
+            let q = crate::paged::rope::apply_rope(&q, &cos, &sin)?; // (1, n_head, N, hd)
+            let k = crate::paged::rope::apply_rope(&k, &cos, &sin)?;
+
+            // Store all N keys/values in the KV pool.
+            // k: (1, n_kv, N, hd) → per-token: iterate over seq dim
+            let k_seq = k.transpose(1, 2)?; // (1, N, n_kv, hd)
+            let v_seq = v.transpose(1, 2)?;
+            for pos in 0..n_seq {
+                let kt = k_seq.narrow(1, pos, 1)?.reshape((1usize, n_kv, hd))?;
+                let vt = v_seq.narrow(1, pos, 1)?.reshape((1usize, n_kv, hd))?;
+                kv[li].write(alloc, table, pos, &kt, &vt)?;
+            }
+
+            // GQA repeat
+            let k_rep = if n_kv != n_head {
+                let repeat = n_head / n_kv;
+                let (b, _, s, d) = k.dims4()?;
+                k.unsqueeze(2)?.expand((b, n_kv, repeat, s, d))?.reshape((b, n_head, s, d))?
+            } else { k.clone() };
+            let v_rep = if n_kv != n_head {
+                let repeat = n_head / n_kv;
+                let (b, _, s, d) = v.dims4()?;
+                v.unsqueeze(2)?.expand((b, n_kv, repeat, s, d))?.reshape((b, n_head, s, d))?
+            } else { v.clone() };
+
+            let scale = 1.0 / (hd as f64).sqrt();
+            let att = (q.matmul(&k_rep.t()?)? * scale)?;
+            let att = att.broadcast_add(&causal_mask)?;
+            let att = candle_nn::ops::softmax_last_dim(&att)?;
+            let out = att.matmul(&v_rep)?; // (1, n_head, N, hd)
+            let out = out.transpose(1, 2)?.reshape((1usize, n_seq, n_head * hd))?; // (1, N, n_head*hd)
+            let out = layer.attn_o.forward(&out)?; // (1, N, embed)
+            x = (residual + out)?;
+
+            let residual = x.clone();
+            let xn = layer.ffn_norm.forward(&x)?;
+            let gate = candle_nn::ops::silu(&layer.ffn_gate.forward(&xn)?)?;
+            let up = layer.ffn_up.forward(&xn)?;
+            let mlp = layer.ffn_down.forward(&(gate * up)?)?;
+            x = (residual + mlp)?;
+        }
+        let x = self.out_norm.forward(&x)?;
+        // Take last token only, like candle's x.i((.., seq_len-1, ..))
+        let x_last = x.narrow(1, n_seq - 1, 1)?.squeeze(1)?; // (1, embed)
+        let logits = self.lm_head.forward(&x_last)?; // (1, vocab)
+        Ok(logits)
+    }
+
     /// Decode/prefill step: one token per row. `token_ids` len == batch.
     /// `positions[b]` = current global position of row b's new token.
     /// `seq_lens[b]` = tokens already in the KV pool for row b (before this token).
@@ -157,8 +254,9 @@ impl Transformer {
             let v = v.reshape((batch, n_kv, hd))?;
             if let Some(qn) = &layer.attn_q_norm { q = qn.forward(&q)?; }
             if let Some(kn) = &layer.attn_k_norm { k = kn.forward(&k)?; }
-            let q = crate::paged::rope::apply_rope(&q, &cos, &sin)?;
-            let k = crate::paged::rope::apply_rope(&k, &cos, &sin)?;
+            // rope_i requires 4-D (batch, n_head, seq=1, hd); unsqueeze/squeeze around it.
+            let q = crate::paged::rope::apply_rope(&q.unsqueeze(2)?, &cos, &sin)?.squeeze(2)?;
+            let k = crate::paged::rope::apply_rope(&k.unsqueeze(2)?, &cos, &sin)?.squeeze(2)?;
 
             let mut k_rows = Vec::with_capacity(batch);
             let mut v_rows = Vec::with_capacity(batch);

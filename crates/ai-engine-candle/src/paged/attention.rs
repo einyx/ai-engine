@@ -116,10 +116,11 @@ pub fn sdpa(
         (k.clone(), v.clone())
     };
     let scale = 1.0 / (head_dim as f64).sqrt();
-    let att = (q.matmul(&k.transpose(D::Minus2, D::Minus1)?.contiguous()?)? * scale)?;
+    // Use k.t() without .contiguous() to match candle_transformers' q.matmul(&k.t()?) exactly.
+    let att = (q.matmul(&k.t()?)? * scale)?;
     let att = att.broadcast_add(mask)?;
     let att = candle_nn::ops::softmax_last_dim(&att)?;
-    let out = att.matmul(&v.contiguous()?)?;
+    let out = att.matmul(&v)?;
     let (b, _h, q_len, _d) = out.dims4()?;
     out.transpose(1, 2)?.reshape((b, q_len, n_head * head_dim))
 }
