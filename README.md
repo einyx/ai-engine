@@ -254,6 +254,55 @@ Apache-2.0.
 
 ## Release history
 
+### v0.4.0-alpha.4 — paged continuous-batching engine
+
+ai-engine v0.4.0-alpha.4 replaces the per-request replica pool in the
+`kind = "candle-local"` provider with a **vLLM-style paged
+continuous-batching engine**, selected via `engine = "paged"` (now the
+default for supported architectures). The old replica-pool path remains
+available as `engine = "pool"`.
+
+**Concurrency model change.** The pool path loaded N independent model
+copies and locked one per request. The paged engine loads weights
+**once** and time-shares a single model instance across many in-flight
+sequences through a scheduler with a fixed-block KV cache. Throughput
+now scales with batch size rather than replica count; KV-pool exhaustion
+applies backpressure (requests queue) instead of failing.
+
+New optional config knobs (all `candle-local` only):
+
+```toml
+[[provider]]
+id            = "qwen-local"
+kind          = "candle-local"
+weights_path  = "/models/Qwen2-0.5B-Instruct-Q4_0.gguf"
+device        = "auto"
+engine        = "paged"   # "paged" (default) | "pool"
+max_num_seqs  = 32        # max concurrent sequences per batch  (default 32)
+block_size    = 16        # KV block size in tokens             (default 16)
+kv_cache_blocks = 4096   # KV block pool size (caps total KV memory, default 4096)
+```
+
+**Architecture coverage:** llama, qwen2, qwen3. Architectures the paged
+engine cannot load fall back to the pool path automatically.
+
+**Correctness.** Greedy token-parity was validated against the trusted
+`CandleModel` path (temperature 0 must reproduce the exact same token
+ids). Verified token-for-token on **Qwen2-0.5B-Instruct (Q4_0)** and
+**Qwen3-0.6B (Q8_0)**. Continuous-batching determinism was also verified:
+four concurrent varied-length prompts each produced the same greedy ids
+as run alone. (Llama parity was not run this session — no llama GGUF
+available on the test box.)
+
+**Throughput smoke (CPU, single box):** ~0.7 tok/s aggregate across
+8 concurrent sequences on Qwen2-0.5B-Instruct-Q4_0. This is a
+liveness/throughput smoke on CPU, not a tuned benchmark; GPU throughput
+for the paged path was not measured this session.
+
+Deferred to a later alpha: chunked prefill, a fused CUDA paged-attention
+kernel, multi-engine/multi-GPU sharding, and cross-sequence prefix/KV
+sharing.
+
 ### v0.4.0-alpha.3 — GGUF chat templates (instruct models answer as assistants)
 
 The `kind = "candle-local"` provider now applies each GGUF's embedded chat
