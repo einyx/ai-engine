@@ -254,9 +254,19 @@ impl Transformer {
             let v = v.reshape((batch, n_kv, hd))?;
             if let Some(qn) = &layer.attn_q_norm { q = qn.forward(&q)?; }
             if let Some(kn) = &layer.attn_k_norm { k = kn.forward(&k)?; }
-            // rope_i requires 4-D (batch, n_head, seq=1, hd); unsqueeze/squeeze around it.
-            let q = crate::paged::rope::apply_rope(&q.unsqueeze(2)?, &cos, &sin)?.squeeze(2)?;
-            let k = crate::paged::rope::apply_rope(&k.unsqueeze(2)?, &cos, &sin)?.squeeze(2)?;
+            // rope requires 4-D (b, h, seq, d) and indexes cos/sin along the seq axis.
+            // With batch>1 each row needs its OWN position, but the batch dim is opaque to rope —
+            // it broadcasts the same cos/sin entry across all batch rows.
+            // Fix: move batch rows onto the seq axis so rope applies the b-th position to
+            // the b-th row.
+            // q/k: (batch, n_head, hd) → transpose(0,1) → (n_head, batch, hd)
+            //   → unsqueeze(0) → (1, n_head, batch, hd) = (b=1, h, seq=batch, d)
+            // cos/sin: (batch, hd/2) = (seq=batch, hd/2) — exactly what rope expects.
+            // After rope: squeeze(0) → (n_head, batch, hd), transpose(0,1) → (batch, n_head, hd).
+            let q_r = q.transpose(0, 1)?.unsqueeze(0)?.contiguous()?; // (1, n_head, batch, hd)
+            let k_r = k.transpose(0, 1)?.unsqueeze(0)?.contiguous()?;
+            let q = crate::paged::rope::apply_rope(&q_r, &cos, &sin)?.squeeze(0)?.transpose(0, 1)?.contiguous()?; // (batch, n_head, hd)
+            let k = crate::paged::rope::apply_rope(&k_r, &cos, &sin)?.squeeze(0)?.transpose(0, 1)?.contiguous()?;
 
             let mut k_rows = Vec::with_capacity(batch);
             let mut v_rows = Vec::with_capacity(batch);
