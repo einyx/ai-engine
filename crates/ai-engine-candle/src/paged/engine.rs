@@ -40,8 +40,11 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn spawn(gguf_path: &Path, device: Device, cfg: EngineConfig) -> anyhow::Result<Arc<Self>> {
+    pub fn spawn(gguf_path: &Path, device: Device, mut cfg: EngineConfig) -> anyhow::Result<Arc<Self>> {
         let model = Transformer::load(gguf_path, device.clone(), cfg.max_seq)?;
+        // Override max_seq from the model's actual context_length (GGUF metadata),
+        // so RoPE table size and admission guard are consistent.
+        cfg.max_seq = model.cfg.context_length;
         let (submit_tx, submit_rx) = mpsc::unbounded_channel::<GenRequest>();
         std::thread::spawn(move || run_loop(model, device, cfg, submit_rx));
         Ok(Arc::new(Self { submit_tx }))
@@ -74,7 +77,7 @@ fn run_loop(
         while running.len() < cfg.max_num_seqs {
             match submit_rx.try_recv() {
                 Ok(req) => {
-                    if let Some(seq) = prefill(&model, &mut kv, &mut alloc, req) {
+                    if let Some(seq) = prefill(&model, &mut kv, &mut alloc, &cfg, req) {
                         running.push(seq);
                     }
                 }
@@ -87,7 +90,7 @@ fn run_loop(
         if running.is_empty() {
             match submit_rx.blocking_recv() {
                 Some(req) => {
-                    if let Some(seq) = prefill(&model, &mut kv, &mut alloc, req) {
+                    if let Some(seq) = prefill(&model, &mut kv, &mut alloc, &cfg, req) {
                         running.push(seq);
                     }
                     continue;
@@ -96,28 +99,66 @@ fn run_loop(
             }
         }
 
+        // HIGH 1: OOM eviction — ensure_capacity before building tables.
+        // Sequences that fail get an error, their blocks are released, and they
+        // are evicted before we call decode_step (avoiding OOB panic in alloc.locate).
+        {
+            let mut evicted = false;
+            let mut survivors: Vec<Seq> = Vec::with_capacity(running.len());
+            for mut s in running.drain(..) {
+                // HIGH 3 decode-side guard: evict if already at or past max context.
+                if s.pos + 1 > cfg.max_seq {
+                    let _ = s.tx.send(Err(format!("sequence exceeded max context ({} > {})", s.pos + 1, cfg.max_seq)));
+                    alloc.release(&mut s.table);
+                    evicted = true;
+                    continue;
+                }
+                if alloc.ensure_capacity(&mut s.table, s.pos + 1).is_err() {
+                    let _ = s.tx.send(Err("KV cache exhausted".into()));
+                    alloc.release(&mut s.table);
+                    evicted = true;
+                    continue;
+                }
+                survivors.push(s);
+            }
+            running = survivors;
+            if evicted && running.is_empty() {
+                continue;
+            }
+        }
+
         let token_ids: Vec<u32> = running.iter().map(|s| s.next_token).collect();
         let positions: Vec<usize> = running.iter().map(|s| s.pos).collect();
         let seq_lens: Vec<usize> = running.iter().map(|s| s.pos).collect();
-        // ensure_capacity must run before we borrow &BlockTable refs
-        for s in running.iter_mut() {
-            if alloc.ensure_capacity(&mut s.table, s.pos + 1).is_err() {
-                let _ = s.tx.send(Err("KV cache exhausted".into()));
-            }
-        }
         let tables: Vec<&BlockTable> = running.iter().map(|s| &s.table).collect();
         let logits = match model.decode_step(&token_ids, &positions, &seq_lens, &mut kv, &alloc, &tables) {
             Ok(l) => l,
             Err(e) => {
                 for s in &running { let _ = s.tx.send(Err(format!("forward: {e}"))); }
+                for s in running.iter_mut() { alloc.release(&mut s.table); }
                 running.clear();
                 continue;
             }
         };
 
+        // HIGH 2: replace .unwrap() with proper error handling for logit row extraction.
+        let mut logit_rows: Vec<Vec<f32>> = Vec::with_capacity(running.len());
+        let mut row_err: Option<String> = None;
+        for i in 0..running.len() {
+            match logits.narrow(0, i, 1).and_then(|t| t.squeeze(0)).and_then(|t| t.to_vec1::<f32>()) {
+                Ok(row) => logit_rows.push(row),
+                Err(e) => { row_err = Some(format!("logit extract: {e}")); break; }
+            }
+        }
+        if let Some(e) = row_err {
+            for s in &running { let _ = s.tx.send(Err(e.clone())); }
+            for s in running.iter_mut() { alloc.release(&mut s.table); }
+            running.clear();
+            continue;
+        }
+
         let mut keep = Vec::with_capacity(running.len());
-        for (i, mut s) in running.into_iter().enumerate() {
-            let row: Vec<f32> = logits.narrow(0, i, 1).and_then(|t| t.squeeze(0)).and_then(|t| t.to_vec1()).unwrap();
+        for (mut s, row) in running.into_iter().zip(logit_rows) {
             let next = sample::sample(&row, &sample_cfg(s.temperature));
             s.pos += 1;
             s.produced += 1;
@@ -142,8 +183,22 @@ fn prefill(
     model: &Transformer,
     kv: &mut [KvPool],
     alloc: &mut BlockAllocator,
+    cfg: &EngineConfig,
     req: GenRequest,
 ) -> Option<Seq> {
+    // MEDIUM 5: zero max_tokens → produce nothing.
+    if req.max_tokens == 0 {
+        return None;
+    }
+    // HIGH 3: reject prompts that exceed the model's context window.
+    if req.prompt_ids.len() > cfg.max_seq {
+        let _ = req.tx.send(Err(format!(
+            "prompt exceeds max context ({} > {})",
+            req.prompt_ids.len(),
+            cfg.max_seq
+        )));
+        return None;
+    }
     let mut table = BlockTable::default();
     if alloc.ensure_capacity(&mut table, req.prompt_ids.len()).is_err() {
         let _ = req.tx.send(Err("KV cache exhausted at admission".into()));
@@ -159,7 +214,15 @@ fn prefill(
             return None;
         }
     };
-    let row: Vec<f32> = logits.squeeze(0).and_then(|t| t.to_vec1()).ok()?;
+    // MEDIUM 4: on logit extraction failure, release blocks before returning None.
+    let row: Vec<f32> = match logits.squeeze(0).and_then(|t| t.to_vec1::<f32>()) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = req.tx.send(Err(format!("prefill logit extract: {e}")));
+            alloc.release(&mut table);
+            return None;
+        }
+    };
     let next = sample::sample(&row, &sample_cfg(req.temperature));
     let _ = req.tx.send(Ok(next));
     Some(Seq {

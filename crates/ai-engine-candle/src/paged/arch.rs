@@ -19,6 +19,8 @@ pub struct ArchConfig {
     pub qkv_bias: bool,
     /// qwen3: per-head q-norm / k-norm RmsNorm before RoPE.
     pub qk_norm: bool,
+    /// Maximum sequence length from GGUF metadata (fallback: 4096).
+    pub context_length: usize,
 }
 
 /// Validate + map the GGUF architecture string to the supported set.
@@ -80,6 +82,13 @@ impl ArchConfig {
             .map(|v| v as usize)
             .unwrap_or(embedding_length / head_count);
 
+        let context_length = content
+            .metadata
+            .get(&format!("{arch}.context_length"))
+            .and_then(|v| v.to_u32().ok())
+            .map(|v| v as usize)
+            .unwrap_or(4096);
+
         Ok(Self {
             arch,
             block_count,
@@ -92,6 +101,7 @@ impl ArchConfig {
             rms_norm_eps,
             qkv_bias: arch == "qwen2",
             qk_norm: arch == "qwen3",
+            context_length,
         })
     }
 }

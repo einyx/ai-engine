@@ -42,7 +42,7 @@ fn rms_from(ct: &gguf_file::Content, r: &mut std::fs::File, name: &str, eps: f64
 }
 
 impl Transformer {
-    pub fn load(gguf_path: &Path, device: Device, max_seq: usize) -> anyhow::Result<Self> {
+    pub fn load(gguf_path: &Path, device: Device, _max_seq: usize) -> anyhow::Result<Self> {
         let mut file = std::fs::File::open(gguf_path)
             .with_context(|| format!("open {}", gguf_path.display()))?;
         let ct = gguf_file::Content::read(&mut file)
@@ -110,7 +110,7 @@ impl Transformer {
                 ffn_down: QMatMul::from_qtensor(ct.tensor(&mut file, &format!("{p}.ffn_down.weight"), &device)?)?,
             });
         }
-        let rope = Rope::new(cfg.rope_dim, cfg.rope_freq_base, max_seq, &device)?;
+        let rope = Rope::new(cfg.rope_dim, cfg.rope_freq_base, cfg.context_length, &device)?;
         Ok(Self { cfg, embed, layers, out_norm, lm_head, rope, device })
     }
 
