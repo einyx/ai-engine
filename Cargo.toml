@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/einyx/ai-engine"
+
+[workspace.dependencies]
+async-stream = "0.3"
+clap = { version = "4", features = ["derive"] }
+http = "1"
+http-body-util = "0.1"
+arc-swap = "1"
+wiremock = "0.6"
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros", "tokio"] }
+bytes = "1"
+futures = "0.3"
+globset = "0.4"
+hyper = { version = "1", features = ["full"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+time = { version = "0.3", features = ["serde", "macros", "formatting"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+
+ai-engine-core      = { path = "crates/ai-engine-core" }
+ai-engine-provider  = { path = "crates/ai-engine-provider" }
+ai-engine-openai    = { path = "crates/ai-engine-openai" }
+ai-engine-anthropic = { path = "crates/ai-engine-anthropic" }
+ai-engine-stages    = { path = "crates/ai-engine-stages" }
+ai-engine-config    = { path = "crates/ai-engine-config" }
+ai-engine-http      = { path = "crates/ai-engine-http" }
+ai-engine-tokenizer = { path = "crates/ai-engine-tokenizer" }
+ai-engine-runtime = { path = "crates/ai-engine-runtime" }
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+tempfile = "3"
+burn = { version = "0.21", default-features = false }
+burn-ndarray = { version = "0.21", features = ["blas-openblas"] }
+openblas-src = { version = "0.10", features = ["static"] }
+burn-cuda = "0.21"
+burn-wgpu = "0.21"
+safetensors = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+half = "2"
+memmap2 = "0.9"
+rand = "0.8"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+sha2 = "0.10"
+pem = "3"
+sysinfo = "0.32"
+ai-engine-cluster = { path = "crates/ai-engine-cluster" }
+rust-embed = "8"
+mime_guess = "2"
+ai-engine-web = { path = "crates/ai-engine-web" }
+candle-core = "0.10.2"
+candle-nn = "0.10.2"
+candle-transformers = "0.10.2"
+dirs = "5"
+hostname = "0.4"
+mdns-sd = "0.19"

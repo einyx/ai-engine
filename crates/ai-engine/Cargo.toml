@@ -1,0 +1,58 @@
+[package]
+name = "ai-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "ai_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ai-engine"
+path = "src/main.rs"
+
+[features]
+backend-candle = ["dep:ai-engine-candle"]
+backend-candle-cuda = ["backend-candle", "ai-engine-candle/cuda"]
+backend-rustyllm = ["dep:ai-engine-rustyllm"]
+backend-rustyllm-cuda = ["backend-rustyllm", "ai-engine-rustyllm/cuda"]
+
+[dependencies]
+ai-engine-anthropic.workspace = true
+ai-engine-web.workspace = true
+ai-engine-candle = { path = "../ai-engine-candle", optional = true }
+ai-engine-rustyllm = { path = "../ai-engine-rustyllm", optional = true }
+ai-engine-cluster.workspace = true
+ai-engine-config.workspace = true
+ai-engine-core.workspace = true
+ai-engine-http.workspace = true
+ai-engine-openai.workspace = true
+ai-engine-provider.workspace = true
+ai-engine-runtime.workspace = true
+ai-engine-stages.workspace = true
+ai-engine-tokenizer.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+clap.workspace = true
+burn-ndarray.workspace = true
+dirs.workspace = true
+hostname.workspace = true
+reqwest = { workspace = true }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+async-openai = "0.27"
+futures.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json.workspace = true
+tempfile = "3"
+tokio = { workspace = true }
+uuid.workspace = true
+wiremock.workspace = true

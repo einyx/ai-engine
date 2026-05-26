@@ -1,0 +1,26 @@
+[package]
+name = "ai-engine-stages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ai-engine-core.workspace = true
+ai-engine-provider.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+globset.workspace = true
+http = { workspace = true }
+regex.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+time.workspace = true
+tokio = { workspace = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true }
+uuid.workspace = true

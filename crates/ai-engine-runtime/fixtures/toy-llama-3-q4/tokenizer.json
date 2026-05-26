@@ -1,0 +1,757 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "<unk>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "post_processor": null,
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": true,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": "<unk>",
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "<unk>": 0,
+      "!": 1,
+      ",": 2,
+      "-": 3,
+      ".": 4,
+      "0": 5,
+      "1": 6,
+      "2": 7,
+      "3": 8,
+      "4": 9,
+      "5": 10,
+      "6": 11,
+      "7": 12,
+      "8": 13,
+      "9": 14,
+      "A": 15,
+      "B": 16,
+      "C": 17,
+      "D": 18,
+      "E": 19,
+      "F": 20,
+      "G": 21,
+      "H": 22,
+      "I": 23,
+      "J": 24,
+      "K": 25,
+      "L": 26,
+      "M": 27,
+      "N": 28,
+      "O": 29,
+      "P": 30,
+      "Q": 31,
+      "R": 32,
+      "S": 33,
+      "T": 34,
+      "U": 35,
+      "V": 36,
+      "W": 37,
+      "X": 38,
+      "Y": 39,
+      "Z": 40,
+      "a": 41,
+      "b": 42,
+      "c": 43,
+      "d": 44,
+      "e": 45,
+      "f": 46,
+      "g": 47,
+      "h": 48,
+      "i": 49,
+      "j": 50,
+      "k": 51,
+      "l": 52,
+      "m": 53,
+      "n": 54,
+      "o": 55,
+      "p": 56,
+      "q": 57,
+      "r": 58,
+      "s": 59,
+      "t": 60,
+      "u": 61,
+      "v": 62,
+      "w": 63,
+      "x": 64,
+      "y": 65,
+      "z": 66,
+      "Ġ": 67,
+      "Ġb": 68,
+      "az": 69,
+      "he": 70,
+      "st": 71,
+      "Ġf": 72,
+      "Ġt": 73,
+      "01": 74,
+      "23": 75,
+      "45": 76,
+      "67": 77,
+      "89": 78,
+      "AB": 79,
+      "CD": 80,
+      "EF": 81,
+      "Fo": 82,
+      "GH": 83,
+      "He": 84,
+      "IJ": 85,
+      "KL": 86,
+      "MN": 87,
+      "OP": 88,
+      "QR": 89,
+      "ST": 90,
+      "The": 91,
+      "UV": 92,
+      "WX": 93,
+      "YZ": 94,
+      "ab": 95,
+      "ai": 96,
+      "ar": 97,
+      "cd": 98,
+      "ck": 99,
+      "do": 100,
+      "ef": 101,
+      "en": 102,
+      "er": 103,
+      "est": 104,
+      "gh": 105,
+      "gi": 106,
+      "ij": 107,
+      "im": 108,
+      "ix": 109,
+      "ick": 110,
+      "ju": 111,
+      "kl": 112,
+      "ld": 113,
+      "ll": 114,
+      "laz": 115,
+      "mn": 116,
+      "mp": 117,
+      "ne": 118,
+      "nt": 119,
+      "op": 120,
+      "or": 121,
+      "ov": 122,
+      "ow": 123,
+      "ox": 124,
+      "qr": 125,
+      "qu": 126,
+      "re": 127,
+      "ru": 128,
+      "row": 129,
+      "tu": 130,
+      "uv": 131,
+      "wx": 132,
+      "wor": 133,
+      "yz": 134,
+      "ĠFo": 135,
+      "Ġdo": 136,
+      "Ġju": 137,
+      "Ġlaz": 138,
+      "Ġov": 139,
+      "Ġqu": 140,
+      "Ġru": 141,
+      "Ġwor": 142,
+      "Ġbaz": 143,
+      "Ġbar": 144,
+      "Ġbrow": 145,
+      "stuv": 146,
+      "Ġfix": 147,
+      "Ġfox": 148,
+      "Ġthe": 149,
+      "Ġtest": 150,
+      "0123": 151,
+      "4567": 152,
+      "ABCD": 153,
+      "EFGH": 154,
+      "Hell": 155,
+      "IJKL": 156,
+      "MNOP": 157,
+      "QRST": 158,
+      "UVWX": 159,
+      "abcd": 160,
+      "efgh": 161,
+      "engi": 162,
+      "ijkl": 163,
+      "ime": 164,
+      "mnop": 165,
+      "mps": 166,
+      "ntime": 167,
+      "qrstuv": 168,
+      "ture": 169,
+      "wxyz": 170,
+      "ĠFoo": 171,
+      "Ġdog": 172,
+      "Ġjumps": 173,
+      "Ġlazy": 174,
+      "Ġover": 175,
+      "Ġquick": 176,
+      "Ġruntime": 177,
+      "Ġworld": 178,
+      "Ġbrown": 179,
+      "Ġfixture": 180,
+      "01234567": 181,
+      "ABCDEFGH": 182,
+      "Hello": 183,
+      "IJKLMNOP": 184,
+      "QRSTUVWX": 185,
+      "abcdefgh": 186,
+      "engine": 187,
+      "ijklmnop": 188,
+      "qrstuvwxyz": 189,
+      "0123456789": 190,
+      "ABCDEFGHIJKLMNOP": 191,
+      "QRSTUVWXYZ": 192,
+      "abcdefghijklmnop": 193,
+      "qrstuvwxyzABCDEFGHIJKLMNOP": 194,
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP": 195,
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ": 196
+    },
+    "merges": [
+      [
+        "Ġ",
+        "b"
+      ],
+      [
+        "a",
+        "z"
+      ],
+      [
+        "h",
+        "e"
+      ],
+      [
+        "s",
+        "t"
+      ],
+      [
+        "Ġ",
+        "f"
+      ],
+      [
+        "Ġ",
+        "t"
+      ],
+      [
+        "0",
+        "1"
+      ],
+      [
+        "2",
+        "3"
+      ],
+      [
+        "4",
+        "5"
+      ],
+      [
+        "6",
+        "7"
+      ],
+      [
+        "8",
+        "9"
+      ],
+      [
+        "A",
+        "B"
+      ],
+      [
+        "C",
+        "D"
+      ],
+      [
+        "E",
+        "F"
+      ],
+      [
+        "F",
+        "o"
+      ],
+      [
+        "G",
+        "H"
+      ],
+      [
+        "H",
+        "e"
+      ],
+      [
+        "I",
+        "J"
+      ],
+      [
+        "K",
+        "L"
+      ],
+      [
+        "M",
+        "N"
+      ],
+      [
+        "O",
+        "P"
+      ],
+      [
+        "Q",
+        "R"
+      ],
+      [
+        "S",
+        "T"
+      ],
+      [
+        "T",
+        "he"
+      ],
+      [
+        "U",
+        "V"
+      ],
+      [
+        "W",
+        "X"
+      ],
+      [
+        "Y",
+        "Z"
+      ],
+      [
+        "a",
+        "b"
+      ],
+      [
+        "a",
+        "i"
+      ],
+      [
+        "a",
+        "r"
+      ],
+      [
+        "c",
+        "d"
+      ],
+      [
+        "c",
+        "k"
+      ],
+      [
+        "d",
+        "o"
+      ],
+      [
+        "e",
+        "f"
+      ],
+      [
+        "e",
+        "n"
+      ],
+      [
+        "e",
+        "r"
+      ],
+      [
+        "e",
+        "st"
+      ],
+      [
+        "g",
+        "h"
+      ],
+      [
+        "g",
+        "i"
+      ],
+      [
+        "i",
+        "j"
+      ],
+      [
+        "i",
+        "m"
+      ],
+      [
+        "i",
+        "x"
+      ],
+      [
+        "i",
+        "ck"
+      ],
+      [
+        "j",
+        "u"
+      ],
+      [
+        "k",
+        "l"
+      ],
+      [
+        "l",
+        "d"
+      ],
+      [
+        "l",
+        "l"
+      ],
+      [
+        "l",
+        "az"
+      ],
+      [
+        "m",
+        "n"
+      ],
+      [
+        "m",
+        "p"
+      ],
+      [
+        "n",
+        "e"
+      ],
+      [
+        "n",
+        "t"
+      ],
+      [
+        "o",
+        "p"
+      ],
+      [
+        "o",
+        "r"
+      ],
+      [
+        "o",
+        "v"
+      ],
+      [
+        "o",
+        "w"
+      ],
+      [
+        "o",
+        "x"
+      ],
+      [
+        "q",
+        "r"
+      ],
+      [
+        "q",
+        "u"
+      ],
+      [
+        "r",
+        "e"
+      ],
+      [
+        "r",
+        "u"
+      ],
+      [
+        "r",
+        "ow"
+      ],
+      [
+        "t",
+        "u"
+      ],
+      [
+        "u",
+        "v"
+      ],
+      [
+        "w",
+        "x"
+      ],
+      [
+        "w",
+        "or"
+      ],
+      [
+        "y",
+        "z"
+      ],
+      [
+        "Ġ",
+        "Fo"
+      ],
+      [
+        "Ġ",
+        "do"
+      ],
+      [
+        "Ġ",
+        "ju"
+      ],
+      [
+        "Ġ",
+        "laz"
+      ],
+      [
+        "Ġ",
+        "ov"
+      ],
+      [
+        "Ġ",
+        "qu"
+      ],
+      [
+        "Ġ",
+        "ru"
+      ],
+      [
+        "Ġ",
+        "wor"
+      ],
+      [
+        "Ġb",
+        "az"
+      ],
+      [
+        "Ġb",
+        "ar"
+      ],
+      [
+        "Ġb",
+        "row"
+      ],
+      [
+        "st",
+        "uv"
+      ],
+      [
+        "Ġf",
+        "ix"
+      ],
+      [
+        "Ġf",
+        "ox"
+      ],
+      [
+        "Ġt",
+        "he"
+      ],
+      [
+        "Ġt",
+        "est"
+      ],
+      [
+        "01",
+        "23"
+      ],
+      [
+        "45",
+        "67"
+      ],
+      [
+        "AB",
+        "CD"
+      ],
+      [
+        "EF",
+        "GH"
+      ],
+      [
+        "He",
+        "ll"
+      ],
+      [
+        "IJ",
+        "KL"
+      ],
+      [
+        "MN",
+        "OP"
+      ],
+      [
+        "QR",
+        "ST"
+      ],
+      [
+        "UV",
+        "WX"
+      ],
+      [
+        "ab",
+        "cd"
+      ],
+      [
+        "ef",
+        "gh"
+      ],
+      [
+        "en",
+        "gi"
+      ],
+      [
+        "ij",
+        "kl"
+      ],
+      [
+        "im",
+        "e"
+      ],
+      [
+        "mn",
+        "op"
+      ],
+      [
+        "mp",
+        "s"
+      ],
+      [
+        "nt",
+        "ime"
+      ],
+      [
+        "qr",
+        "stuv"
+      ],
+      [
+        "tu",
+        "re"
+      ],
+      [
+        "wx",
+        "yz"
+      ],
+      [
+        "ĠFo",
+        "o"
+      ],
+      [
+        "Ġdo",
+        "g"
+      ],
+      [
+        "Ġju",
+        "mps"
+      ],
+      [
+        "Ġlaz",
+        "y"
+      ],
+      [
+        "Ġov",
+        "er"
+      ],
+      [
+        "Ġqu",
+        "ick"
+      ],
+      [
+        "Ġru",
+        "ntime"
+      ],
+      [
+        "Ġwor",
+        "ld"
+      ],
+      [
+        "Ġbrow",
+        "n"
+      ],
+      [
+        "Ġfix",
+        "ture"
+      ],
+      [
+        "0123",
+        "4567"
+      ],
+      [
+        "ABCD",
+        "EFGH"
+      ],
+      [
+        "Hell",
+        "o"
+      ],
+      [
+        "IJKL",
+        "MNOP"
+      ],
+      [
+        "QRST",
+        "UVWX"
+      ],
+      [
+        "abcd",
+        "efgh"
+      ],
+      [
+        "engi",
+        "ne"
+      ],
+      [
+        "ijkl",
+        "mnop"
+      ],
+      [
+        "qrstuv",
+        "wxyz"
+      ],
+      [
+        "01234567",
+        "89"
+      ],
+      [
+        "ABCDEFGH",
+        "IJKLMNOP"
+      ],
+      [
+        "QRSTUVWX",
+        "YZ"
+      ],
+      [
+        "abcdefgh",
+        "ijklmnop"
+      ],
+      [
+        "qrstuvwxyz",
+        "ABCDEFGHIJKLMNOP"
+      ],
+      [
+        "abcdefghijklmnop",
+        "qrstuvwxyzABCDEFGHIJKLMNOP"
+      ],
+      [
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP",
+        "QRSTUVWXYZ"
+      ]
+    ]
+  }
+}

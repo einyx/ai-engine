@@ -1,0 +1,14 @@
+//! candle-backed native-quantized local GPU inference provider.
+//!
+//! Wraps `candle_transformers::models::quantized_llama` to run GGUF Q4/Q6
+//! Llama-3 models with native quantized matmul on CUDA/Metal/CPU. Implements
+//! the `ai_engine_provider::Provider` trait as `kind = "candle"`.
+
+pub mod device;
+pub mod model;
+pub mod paged;
+pub mod pool;
+pub mod provider;
+pub mod template;
+
+pub use provider::CandleProvider;

@@ -1,0 +1,29 @@
+[package]
+name = "ai-engine-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ai-engine-core.workspace = true
+ai-engine-graph = { path = "../ai-engine-graph" }
+ai-engine-provider.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+axum = { workspace = true }
+bytes.workspace = true
+futures.workspace = true
+http = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true }
+tokio-stream.workspace = true
+async-stream = "0.3"
+tracing.workspace = true
+
+[dev-dependencies]
+ai-engine-stages.workspace = true
+async-trait.workspace = true
+http-body-util.workspace = true
+tower = { version = "0.5", features = ["util"] }

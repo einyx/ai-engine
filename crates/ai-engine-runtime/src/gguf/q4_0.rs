@@ -1,0 +1,147 @@
+//! GGUF Q4_0 tensor: 32-weight blocks with f16 scale + 16 bytes of biased nibbles.
+//!
+//! Block layout (18 bytes total):
+//!   - bytes 0..2  : f16 scale (delta) for the block
+//!   - bytes 2..18 : `qs[0..16]` packed nibbles
+//!
+//! Nibble convention (per ggml.c block_q4_0):
+//!   low nibble  of `qs[j]` (== `qs[j] & 0x0F`)        → weight at block index `j`
+//!   high nibble of `qs[j]` (== `(qs[j] >> 4) & 0x0F`) → weight at block index `j + 16`
+//!   stored 0..15 minus 8 yields signed range -8..7.
+//!   value = signed_nibble * scale_f32
+//!
+//! Tensor flat order (column-major over `[in, out]`):
+//!   gguf_flat[k] = value at (in = k % in_dim, out = k / in_dim)
+//! `dequantize` transposes into burn's row-major layout:
+//!   burn_flat[i * out + j] = gguf_flat[j * in + i]
+
+use burn::tensor::{backend::Backend, Tensor, TensorData};
+use half::f16;
+use std::marker::PhantomData;
+use std::sync::OnceLock;
+
+#[cfg(feature = "backend-cpu")]
+use {ndarray::{ArcArray, Array, Ix2}, std::sync::Arc};
+
+pub const Q4_0_BLOCK_SIZE: usize = 32;
+pub const Q4_0_BYTES_PER_BLOCK: usize = 18;
+
+pub struct Q4GgufTensor<B: Backend> {
+    pub blocks: Vec<u8>,
+    shape: [usize; 2],
+    device: B::Device,
+    _marker: PhantomData<B>,
+    cached_dense: OnceLock<Tensor<B, 2>>,
+    /// CPU-backend GEMV cache: the dequantized weight as a contiguous
+    /// ndarray ArcArray<f32, Ix2> (shape `[in, out]`).  Used by
+    /// `LinearWeight::matmul_gemv` for seq=1 decode.
+    #[cfg(feature = "backend-cpu")]
+    pub(crate) cached_ndarray: OnceLock<Arc<ArcArray<f32, Ix2>>>,
+}
+
+impl<B: Backend> Q4GgufTensor<B> {
+    pub fn shape(&self) -> [usize; 2] {
+        self.shape
+    }
+
+    pub fn from_blocks(
+        blocks: Vec<u8>,
+        shape: [usize; 2],
+        device: &B::Device,
+    ) -> anyhow::Result<Self> {
+        let in_dim = shape[0];
+        let out_dim = shape[1];
+        let total = in_dim * out_dim;
+        if total % Q4_0_BLOCK_SIZE != 0 {
+            anyhow::bail!(
+                "Q4_0 requires total elements ({total}) divisible by {Q4_0_BLOCK_SIZE}"
+            );
+        }
+        let expected_bytes = (total / Q4_0_BLOCK_SIZE) * Q4_0_BYTES_PER_BLOCK;
+        if blocks.len() != expected_bytes {
+            anyhow::bail!(
+                "Q4_0 block bytes len mismatch: expected {expected_bytes}, got {}",
+                blocks.len()
+            );
+        }
+        Ok(Self {
+            blocks,
+            shape,
+            device: device.clone(),
+            _marker: PhantomData,
+            cached_dense: OnceLock::new(),
+            #[cfg(feature = "backend-cpu")]
+            cached_ndarray: OnceLock::new(),
+        })
+    }
+
+    /// Reconstruct an f32 Tensor<B, 2> of shape [in, out] in burn's row-major layout.
+    pub fn dequantize(&self) -> Tensor<B, 2> {
+        let in_dim = self.shape[0];
+        let out_dim = self.shape[1];
+        let total = in_dim * out_dim;
+        let num_blocks = total / Q4_0_BLOCK_SIZE;
+
+        // First pass: reconstruct in GGUF's flat (column-major over [in, out]) order.
+        let mut gguf_flat = vec![0.0_f32; total];
+        for b in 0..num_blocks {
+            let off = b * Q4_0_BYTES_PER_BLOCK;
+            let scale_bits = u16::from_le_bytes([self.blocks[off], self.blocks[off + 1]]);
+            let scale = f16::from_bits(scale_bits).to_f32();
+            for j in 0..16 {
+                let byte = self.blocks[off + 2 + j];
+                let low = (byte & 0x0F) as i32 - 8;
+                let high = ((byte >> 4) & 0x0F) as i32 - 8;
+                gguf_flat[b * Q4_0_BLOCK_SIZE + j] = (low as f32) * scale;
+                gguf_flat[b * Q4_0_BLOCK_SIZE + j + 16] = (high as f32) * scale;
+            }
+        }
+
+        // Transpose column-major [in, out] -> burn row-major [in, out]:
+        //   burn_flat[i * out + j] = gguf_flat[j * in + i]
+        let mut burn_flat = vec![0.0_f32; total];
+        for i in 0..in_dim {
+            for j in 0..out_dim {
+                burn_flat[i * out_dim + j] = gguf_flat[j * in_dim + i];
+            }
+        }
+
+        Tensor::<B, 2>::from_data(TensorData::new(burn_flat, [in_dim, out_dim]), &self.device)
+    }
+
+    /// Return a cached f32 dequantized view of this Q4_0 tensor. The first call
+    /// runs `dequantize()` and caches the result; subsequent calls return a cheap
+    /// Arc clone of the cached tensor.
+    ///
+    /// This trades ~8× memory per cached weight (f32 vs 4-bit) for elimination of
+    /// repeated dequant cost on every matmul. Profiling identified per-call
+    /// dequant as 37.5% of decode wall time for Llama-3.2-1B Q4_0 — caching
+    /// removes that overhead entirely after the first decode step.
+    pub fn dequantize_cached(&self) -> Tensor<B, 2> {
+        self.cached_dense.get_or_init(|| self.dequantize()).clone()
+    }
+
+    /// Return (or build) the contiguous ndarray weight for BLAS sgemv dispatch.
+    ///
+    /// On the first call, dequantizes the weight (using the burn cache if
+    /// already populated) and copies the f32 data into an ndarray ArcArray.
+    /// Subsequent calls return a cheap Arc clone.
+    #[cfg(feature = "backend-cpu")]
+    pub(crate) fn ndarray_weight(&self) -> Arc<ArcArray<f32, Ix2>> {
+        self.cached_ndarray
+            .get_or_init(|| {
+                let [in_dim, out_dim] = self.shape;
+                // Reuse the burn cache if available; otherwise dequantize fresh.
+                let floats: Vec<f32> = self
+                    .dequantize_cached()
+                    .into_data()
+                    .to_vec()
+                    .expect("Q4Gguf dequant must be f32");
+                let arr = Array::from_shape_vec([in_dim, out_dim], floats)
+                    .expect("shape/data mismatch in ndarray weight cache")
+                    .into_shared();
+                Arc::new(arr)
+            })
+            .clone()
+    }
+}

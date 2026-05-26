@@ -1,0 +1,149 @@
+# ai-engine — example configuration
+#
+# Environment variables of the form $ {VAR_NAME} (no space — written here
+# with a space in this comment to prevent self-substitution) are interpolated
+# from the process environment at load time. Missing variables are a fatal
+# startup error. Comments are NOT skipped by the interpolator, so any
+# placeholder in this file must either be a real variable or be defanged
+# (as above).
+
+[server]
+bind = "0.0.0.0:8080"
+shutdown_grace_secs = 30
+log_format = "json"        # "json" | "pretty"
+log_level = "info"
+
+[auth]
+# "passthrough" — forward the inbound Authorization header to the upstream
+# "shared-key"  — accept only the listed master keys
+mode = "shared-key"
+master_keys = [
+  { key = "${AI_ENGINE_MASTER_KEY}", name = "default" },
+]
+
+[content_policy]
+max_request_bytes = 1_048_576
+prompt_injection_patterns = [
+  "ignore (all )?previous instructions",
+]
+
+# --- Providers ---
+
+[[provider]]
+id = "openai-prod"
+kind = "openai"
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+timeout_secs = 120
+http2 = true
+
+[[provider]]
+id = "anthropic-prod"
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "${ANTHROPIC_API_KEY}"
+timeout_secs = 120
+
+# Local Ollama. Uncomment to enable. api_key is intentionally omitted —
+# Ollama (and most local OpenAI-compatible servers) require no auth.
+# [[provider]]
+# id = "ollama-local"
+# kind = "openai"
+# base_url = "http://localhost:11434/v1"
+# timeout_secs = 600       # local models can be slower; allow more time
+# http2 = false            # Ollama defaults to http/1.1
+
+# vLLM, LM Studio, Llama.cpp, OpenRouter — all OpenAI-shape, all configured
+# the same way: kind = "openai" + the appropriate base_url + (optional) api_key.
+
+# --- Routes (top-to-bottom, first match wins) ---
+
+[[route]]
+match = { model = "gpt-4o" }
+provider = "openai-prod"
+upstream_model = "gpt-4o-2024-08-06"
+
+[[route]]
+match = { model = "gpt-*" }
+provider = "openai-prod"
+
+[[route]]
+match = { model = "text-embedding-*" }
+provider = "openai-prod"
+
+[[route]]
+match = { model = "claude-*" }
+provider = "anthropic-prod"
+
+# [[route]]
+# match = { model = "llama3*" }
+# provider = "ollama-local"
+
+# --- Pipelines (per endpoint) ---
+
+[pipeline."/v1/chat/completions"]
+stages = ["auth", "content_policy", "model_route", "forward", "log"]
+
+[pipeline."/v1/messages"]
+stages = ["auth", "content_policy", "model_route", "forward", "log"]
+
+[pipeline."/v1/embeddings"]
+stages = ["auth", "model_route", "forward", "log"]
+
+# --- Distributed inference cluster (uncomment to enable) ---
+#
+# A cluster of nodes runs pipeline-parallel inference. The leader speaks HTTP;
+# workers only speak QUIC inbound. Every node lists every node here — config
+# is symmetric across the cluster. Run `ai-engine node fingerprint` on each
+# node to get its sha256:... fingerprint, then paste into cert_fingerprint.
+#
+# [[cluster]]
+# id = "home-lab"
+# leader = "node-a"
+# quic_bind = "0.0.0.0:7700"
+# protocol_version = 1
+# join_timeout_secs = 30
+# heartbeat_interval_secs = 5
+#
+# [cluster.model]
+# id = "llama-3-70b"
+# config_path = "/srv/models/llama-3-70b/config.json"
+# weights_path = "/srv/models/llama-3-70b"
+# tokenizer_path = "/srv/models/llama-3-70b/tokenizer.json"
+#
+# [[cluster.node]]
+# id = "node-a"
+# addr = "192.168.1.10:7700"
+# cert_fingerprint = "sha256:REPLACE_WITH_NODE_A_FINGERPRINT"
+# backend = "cuda"
+# device_index = 0
+#
+# [[cluster.node]]
+# id = "node-b"
+# addr = "192.168.1.11:7700"
+# cert_fingerprint = "sha256:REPLACE_WITH_NODE_B_FINGERPRINT"
+# backend = "metal"
+#
+# [[provider]]
+# id = "home-cluster"
+# kind = "local-cluster"
+# cluster = "home-lab"
+#
+# [[route]]
+# match = { model = "llama-3-70b" }
+# provider = "home-cluster"
+
+# ── rustyllm local provider (build with --features backend-rustyllm) ──────────
+# Layer-wise streaming inference: runs large models on small GPUs by loading
+# one transformer layer at a time. Loads HF safetensors (a model directory or
+# a hub repo id), NOT GGUF.
+#
+# [[provider]]
+# id = "rustyllm-local"
+# kind = "rustyllm"
+# weights_path = "/srv/models/Llama-3.2-1B"   # dir with config.json + tokenizer.json + *.safetensors
+# device = "auto"                             # auto | cpu | cuda:0 | metal
+#
+# [[route]]
+# match = { model = "llama-3.2-1b" }
+# provider = "rustyllm-local"

@@ -1,0 +1,71 @@
+# Minimal local config — proxies to a running Ollama. No API keys required.
+[server]
+bind = "0.0.0.0:59151"
+shutdown_grace_secs = 30
+log_format = "pretty"
+log_level = "info"
+
+[auth]
+mode = "passthrough"
+
+[content_policy]
+max_request_bytes = 1_048_576
+prompt_injection_patterns = []
+
+# Auto-discover Ollama instances advertised on the LAN via mDNS and register
+# them as providers + routes at startup.
+[discovery]
+ollama_mdns = true
+timeout_secs = 8
+
+[[provider]]
+id = "ollama-local"
+kind = "openai"
+base_url = "http://localhost:11434/v1"
+timeout_secs = 600
+http2 = false
+
+# In-process rustyllm provider (build with --features backend-rustyllm):
+# layer-streaming inference over an HF-safetensors checkpoint, loaded inside
+# the gateway. (The networked rustyllm-serve node is discovered separately as
+# `ollama-rustyllm`.)
+[[provider]]
+id = "rustyllm"
+kind = "rustyllm"
+weights_path = "/home/alessio/models/tinyllama-chat"
+device = "cuda:0"
+
+[[route]]
+match = { model = "tinyllama-chat" }
+provider = "rustyllm"
+
+[[route]]
+match = { model = "llama3.1:8b" }
+provider = "ollama-local"
+
+# Also served by the discovered ollama-xps — forms a 2-provider load-balanced
+# pool for llama3.2:1b (least in-flight + failover).
+[[route]]
+match = { model = "llama3.2:1b" }
+provider = "ollama-local"
+
+[[route]]
+match = { model = "llama3.3:70b" }
+provider = "ollama-local"
+
+[[route]]
+match = { model = "qwen2.5-coder:7b" }
+provider = "ollama-local"
+
+[[route]]
+match = { model = "qwen2.5-coder:32b" }
+provider = "ollama-local"
+
+[pipeline."/v1/chat/completions"]
+stages = ["auth", "content_policy", "model_route", "forward", "log"]
+
+[pipeline."/v1/messages"]
+stages = ["auth", "content_policy", "model_route", "forward", "log"]
+
+[pipeline."/v1/embeddings"]
+stages = ["auth", "model_route", "forward", "log"]

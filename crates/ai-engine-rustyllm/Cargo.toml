@@ -1,0 +1,33 @@
+[package]
+name = "ai-engine-rustyllm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = []
+# Enable at most one GPU backend per build. Each flips the matching
+# rustyllm + candle-core feature so the whole graph agrees on the device.
+cuda = ["rustyllm/cuda", "candle-core/cuda"]
+metal = ["rustyllm/metal", "candle-core/metal"]
+# Intel MKL parallel CPU matmul (needs the intel-mkl system package).
+mkl = ["rustyllm/mkl", "candle-core/mkl"]
+
+[dependencies]
+# rustyllm lives outside this workspace; path is relative to this crate dir.
+rustyllm = { path = "../../../../rustyllm" }
+candle-core = { workspace = true }
+candle-transformers = { workspace = true }
+# Must match the tokenizers version rustyllm links so the `Tokenizer`
+# type lines up across the boundary.
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ai-engine-provider = { path = "../ai-engine-provider" }
+anyhow.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+uuid = { workspace = true }
+async-trait = { workspace = true }
+async-stream.workspace = true
+serde_json.workspace = true
+futures = { workspace = true }

@@ -1,0 +1,90 @@
+[server]
+bind = "0.0.0.0:59151"
+shutdown_grace_secs = 30
+log_format = "pretty"
+log_level = "info"
+
+[auth]
+mode = "passthrough"
+master_keys = []
+
+[content_policy]
+max_request_bytes = 1_048_576
+prompt_injection_patterns = []
+
+[[cluster]]
+id = "local-lab"
+leader = "node-a"
+quic_bind = "0.0.0.0:7700"
+protocol_version = 1
+join_timeout_secs = 30
+heartbeat_interval_secs = 5
+
+[cluster.model]
+id = "toy-llama-3"
+config_path = "crates/ai-engine-runtime/fixtures/toy-llama-3/config.json"
+weights_path = "crates/ai-engine-runtime/fixtures/toy-llama-3/model.safetensors"
+tokenizer_path = "crates/ai-engine-runtime/fixtures/toy-llama-3/tokenizer.json"
+
+[[cluster.node]]
+id = "node-a"
+addr = "127.0.0.1:7700"
+cert_fingerprint = "sha256:26c832173abfc31d1599ceada747d07798794e476c19ea05f966cb1899beaac8"
+backend = "cpu"
+device_index = 0
+
+[[cluster.node]]
+id = "node-b"
+addr = "127.0.0.1:7701"
+cert_fingerprint = "sha256:776dbb46ee1340b71ecefb108663b2607cc00bac82c4509d2587fd03ec5c18d9"
+backend = "cpu"
+device_index = 0
+
+[[cluster.node]]
+id = "node-c"
+addr = "127.0.0.1:7702"
+cert_fingerprint = "sha256:85945449141d1f979a0b88632e4ac2003e660d00b14ed1caed7760d1b54f6863"
+backend = "cpu"
+device_index = 0
+
+[[provider]]
+id = "local-cluster-provider"
+kind = "local-cluster"
+cluster = "local-lab"
+
+# Also proxy a local Ollama so the Chat tab keeps working on this same port.
+[[provider]]
+id = "ollama-local"
+kind = "openai"
+base_url = "http://localhost:11434/v1"
+timeout_secs = 600
+http2 = false
+
+[[route]]
+match = { model = "toy-llama-3" }
+provider = "local-cluster-provider"
+
+[[route]]
+match = { model = "llama3.1:8b" }
+provider = "ollama-local"
+
+[[route]]
+match = { model = "llama3.3:70b" }
+provider = "ollama-local"
+
+[[route]]
+match = { model = "qwen2.5-coder:7b" }
+provider = "ollama-local"
+
+[[route]]
+match = { model = "qwen2.5-coder:32b" }
+provider = "ollama-local"
+
+[pipeline."/v1/chat/completions"]
+stages = ["auth", "content_policy", "model_route", "forward", "log"]
+
+[pipeline."/v1/messages"]
+stages = ["auth", "content_policy", "model_route", "forward", "log"]
+
+[pipeline."/v1/embeddings"]
+stages = ["auth", "model_route", "forward", "log"]
